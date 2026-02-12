@@ -1,23 +1,4 @@
-# """
-# Gemini slide generator
-# RAW PDF text → CLEAN SLIDES (STRICT FORMAT)
-# """
 
-# import google.genai as genai
-# import json
-# import re
-# from config import GOOGLE_API_KEY, GEMINI_MODEL
-
-# # -------------------------------------------------
-# # CONFIG
-# # -------------------------------------------------
-# if not GOOGLE_API_KEY:
-#     raise ValueError(
-#         "GOOGLE_API_KEY not found in environment. "
-#         "Please set it in your .env file or environment variables."
-#     )
-
-# client = genai.Client(api_key=GOOGLE_API_KEY)
 """
 Gemini Form Content Processor
 Enhances raw form data into professional training slides

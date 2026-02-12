@@ -1,39 +1,19 @@
-"""
-BSK Training Optimization API
-A comprehensive FastAPI application for managing and optimizing training programs
-for Bangla Sahayata Kendra (BSK) DEO Operators. This API provides endpoints for managing BSK
-master data, service catalogs, DEO (Data Entry Operator) information, and provisions.
-It also includes AI-powered analytics for identifying underperforming BSKs and
-generating training recommendations and video Generation.
-
-Author: AI ASSISTED TRAINING TEAM
-Version: 1.0.0
-"""
-
-# ============================================================================
-# STANDARD LIBRARY IMPORTS
-# ============================================================================
 import os
 import sys
-import uuid
-import shutil
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Optional, List
-from fastapi.responses import FileResponse
-from fastapi import UploadFile, File, Form, BackgroundTasks, status
-from datetime import datetime
 
-# ============================================================================
+# =============================================================================
 # THIRD-PARTY IMPORTS
-# ============================================================================
+# =============================================================================
 import pandas as pd
 from dotenv import load_dotenv
+
 from fastapi import (
     FastAPI,
-    APIRouter,
     Depends,
     HTTPException,
     Query,
@@ -44,72 +24,69 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 
-# ============================================================================
+# =============================================================================
 # LOCAL APPLICATION IMPORTS
-# ============================================================================
-from app.models import models
-from app.models import schemas
-from app.models.database import engine, get_db
+# =============================================================================
+
+# Database & Models
+from app.models import models, schemas
+from app.models.database import SessionLocal, engine, get_db
+
+# Utility Functions
 from app.utility.helper_functions import fetch_all_master_data
-from app.utility.video_generation_helper import (
-    generate_video_from_slides,
-    validate_and_match_service,
-    get_next_version,
-    save_video_to_filesystem,
-    cleanup_old_versions,
-    get_video_file_path,
-)
 from app.utility.training_helper_function import (
     enrich_recommendation,
     compute_and_cache_recommendations,
 )
-from app.sync.scheduler import start_scheduler, stop_scheduler, sync_all_tables
 
-# from app.sync.routes import router as sync_router
-# ============================================================================
-# EXTERNAL / AI & TRAINING MODULES
-# ============================================================================
-# Configure module paths
+# Video Generation & Queue
+from app.utility.video_generation_helper import (
+    background_video_generation,
+    validate_and_match_service,
+)
+from app.utility.video_queue_manager import queue_manager
+
+# Sync & Scheduler
+from app.sync.scheduler import (
+    start_scheduler,
+    stop_scheduler,
+)
+from app.sync.service import SyncService
+
+# PDF & Content Utilities
+from utils.pdf_extractor import extract_raw_content
+from utils.pdf_validator import validate_pdf_content
+from utils.service_utils import validate_form_content
+
+# AI / External Services
+from services.gemini_service import (
+    generate_slides_from_form,
+    generate_slides_from_raw,
+)
+
+# =============================================================================
+# EXTERNAL / AI & ANALYTICS MODULE PATH CONFIGURATION
+# =============================================================================
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../../ai_service"))
 )
+
 from bsk_analytics import find_underperforming_bsks
 
-# ============================================================================
-# VIDEO / CONTENT GENERATION UTILITIES
-# ============================================================================
-from utils.pdf_extractor import extract_raw_content
-from services.gemini_service import generate_slides_from_raw, generate_slides_from_form
-from utils.service_utils import validate_form_content
-from app.sync.service import SyncService
-from utils.pdf_validator import validate_pdf_content
-# from app.models.schemas import SyncRequest, SyncResponse, SyncStatus
-# ============================================================================
-# Authentication related imports
-# ============================================================================
-from app.auth.auth_utils import (
-    get_current_user,
-    require_superuser,
-    authenticate_deo,
-    authenticate_superuser,
-    create_access_token,
-    change_password,
-    get_password_hash,
-    TokenData,
-    UserAuth,
-    TokenResponse,
-    PasswordChange,
-)
+# =============================================================================
+# LOGGER CONFIGURATION
+# =============================================================================
+logger = logging.getLogger(__name__)
+
 
 # Loading the environment variables
 load_dotenv()
 # APPLICATION CONFIGURATION
-
+BASE_URL = os.getenv("BASE_URL", "http://localhost:54300")
 # Setup to print the dubug the modes
 logging.basicConfig(
     level=logging.INFO,
@@ -135,16 +112,6 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("🛑 Application shutdown")
     stop_scheduler()
-
-
-# Register routers
-# app.include_router(sync_router)
-
-# Confighguration
-UPLOAD_DIR = Path("uploads")
-
-# # Create directories if they don't exist
-UPLOAD_DIR.mkdir(exist_ok=True)
 
 # Video storage configuration
 VIDEO_BASE_DIR = Path("videos")
@@ -173,751 +140,36 @@ app.add_middleware(
 )
 
 # ============================================================================
-# AUTHENTICATION ENDPOINTS
+# SERVICE TRAINING RECOMMENDATION ENDPOINT WITH AUTH FOR SUPERUSER AND DEO
 # ============================================================================
 
-
-# @app.post("/auth/login", response_model=TokenResponse, tags=["Authentication"])
-# def login(auth_request: UserAuth, db: Session = Depends(get_db)):
-#     """
-#     🔐 **USER LOGIN - Database-Backed Authentication**
-
-#     **Authentication Types:**
-
-#     1. **SUPERUSER (Admin)**
-#        - Username: From superusers table
-#        - Password: Stored in user_credentials (hashed)
-#        - Access: ALL recommendations
-
-#     2. **DEO (Data Entry Operator)**
-#        - Username: DEO agent_code (e.g., "DEO001")
-#        - Password:
-#          * First login: "password123" (default)
-#          * After change: User-set password
-#        - Access: ONLY assigned BSK
-
-#     **First-Time DEO Login:**
-#     - System auto-creates credentials with password "password123"
-#     - Must change password after first login
-
-#     **Security Features:**
-#     - 🔒 Bcrypt password hashing
-#     - 🔒 Account lockout after 5 failed attempts (30 min)
-#     - 🔒 Last login tracking
-#     - 🔒 Password change enforcement
-
-#     **Example Response:**
-#     ```json
-#     {
-#         "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-#         "token_type": "bearer",
-#         "role": "deo",
-#         "bsk_id": 45,
-#         "must_change_password": true
-#     }
-#     ```
-#     """
-#     logger.info(f"🔐 Login attempt for user: {auth_request.username}")
-
-#     # Try superuser authentication first
-#     user_data = authenticate_superuser(db, auth_request.username, auth_request.password)
-
-#     if user_data:
-#         logger.info(f"✅ Superuser authenticated: {auth_request.username}")
-
-#         access_token = create_access_token(
-#             data={
-#                 "user_id": user_data["user_id"],
-#                 "role": user_data["role"],
-#                 "username": user_data["username"],
-#                 "must_change_password": user_data.get("must_change_password", False),
-#             }
-#         )
-
-#         return TokenResponse(
-#             access_token=access_token,
-#             role="superuser",
-#             must_change_password=user_data.get("must_change_password", False),
-#         )
-
-#     # Try DEO authentication
-#     user_data = authenticate_deo(db, auth_request.username, auth_request.password)
-
-#     if user_data:
-#         logger.info(
-#             f"✅ DEO authenticated: {user_data['agent_code']} (BSK: {user_data['bsk_id']})"
-#         )
-
-#         access_token = create_access_token(
-#             data={
-#                 "user_id": user_data["user_id"],
-#                 "role": user_data["role"],
-#                 "bsk_id": user_data["bsk_id"],
-#                 "agent_code": user_data["agent_code"],
-#                 "must_change_password": user_data.get("must_change_password", False),
-#             }
-#         )
-
-#         return TokenResponse(
-#             access_token=access_token,
-#             role="deo",
-#             bsk_id=user_data["bsk_id"],
-#             must_change_password=user_data.get("must_change_password", False),
-#         )
-
-#     # Authentication failed
-#     logger.warning(f"❌ Login failed for user: {auth_request.username}")
-#     raise HTTPException(
-#         status_code=status.HTTP_401_UNAUTHORIZED,
-#         detail="Incorrect username or password",
-#         headers={"WWW-Authenticate": "Bearer"},
-#     )
-
-
-# @app.get("/auth/me", tags=["Authentication"])
-# def get_current_user_info(user: TokenData = Depends(get_current_user)):
-#     """
-#     👤 **GET CURRENT USER INFO**
-#     Returns information about the currently authenticated user.
-#     """
-#     logger.info(f"👤 User info requested: {user.role} (ID: {user.user_id})")
-
-#     response = {
-#         "user_id": user.user_id,
-#         "role": user.role,
-#         "must_change_password": user.must_change_password,
-#     }
-
-#     if user.role == "deo":
-#         response.update(
-#             {
-#                 "bsk_id": user.bsk_id,
-#                 "agent_code": user.agent_code,
-#                 "message": f"You have access to BSK ID: {user.bsk_id}",
-#             }
-#         )
-#     else:
-#         response["message"] = "You have access to all recommendations"
-
-#     return response
-
-
-# @app.post("/auth/change-password", tags=["Authentication"])
-# def change_user_password(
-#     password_change: PasswordChange,
-#     user: TokenData = Depends(get_current_user),
-#     db: Session = Depends(get_db),
-# ):
-#     """
-#     🔑 **CHANGE PASSWORD**
-
-#     Allows users to change their password.
-
-#     **Requirements:**
-#     - Must provide current password
-#     - New password must be at least 8 characters
-
-#     **Request Body:**
-#     ```json
-#     {
-#         "current_password": "password123",
-#         "new_password": "MyNewSecurePassword123!"
-#     }
-#     ```
-
-#     **Use Cases:**
-#     - First-time DEO changing from default password
-#     - Regular password updates
-#     - Security compliance
-#     """
-#     logger.info(f"🔑 Password change request for {user.role}: {user.user_id}")
-
-#     success = change_password(
-#         db=db,
-#         user_id=user.user_id,
-#         user_type=user.role if user.role == "deo" else "superuser",
-#         current_password=password_change.current_password,
-#         new_password=password_change.new_password,
-#     )
-
-#     if success:
-#         return {
-#             "success": True,
-#             "message": "Password changed successfully. Please login again with your new password.",
-#         }
-
-#     raise HTTPException(status_code=500, detail="Password change failed")
-
-
-# # ============================================================================
-# # ADMIN ENDPOINTS - Superuser Management
-# # ============================================================================
-
-
-# @app.post("/admin/create-superuser", tags=["Admin Management"])
-# def create_superuser(
-#     full_name: str = Form(...),
-#     email: str = Form(...),
-#     username: str = Form(...),
-#     password: str = Form(...),
-#     role: str = Form("admin", description="admin, super_admin, analyst"),
-#     phone: Optional[str] = Form(None),
-#     current_user: TokenData = Depends(require_superuser),
-#     db: Session = Depends(get_db),
-# ):
-#     """
-#     👑 **CREATE NEW SUPERUSER (Admin Only)**
-
-#     Only existing superusers can create new superuser accounts.
-
-#     **Fields:**
-#     - full_name: Full name
-#     - email: Email address (unique)
-#     - username: Login username (unique)
-#     - password: Initial password (min 8 chars)
-#     - role: admin, super_admin, analyst
-#     - phone: Optional phone number
-#     """
-#     # from app.models import models
-
-#     logger.info(f"👑 Creating new superuser: {username} by {current_user.user_id}")
-
-#     # Check if username already exists
-#     existing = (
-#         db.query(models.UserCredentials)
-#         .filter(models.UserCredentials.username == username)
-#         .first()
-#     )
-
-#     if existing:
-#         raise HTTPException(status_code=400, detail="Username already exists")
-
-#     # Check if email already exists
-#     existing_email = (
-#         db.query(models.Superuser).filter(models.Superuser.email == email).first()
-#     )
-
-#     if existing_email:
-#         raise HTTPException(status_code=400, detail="Email already exists")
-
-#     # Create superuser profile
-#     superuser = models.Superuser(
-#         full_name=full_name,
-#         email=email,
-#         phone=phone,
-#         role=role,
-#         is_active=True,
-#         created_by=current_user.user_id,
-#     )
-#     db.add(superuser)
-#     db.flush()  # Get superuser_id
-
-#     # Create credentials
-#     creds = models.UserCredentials(
-#         user_id=superuser.superuser_id,
-#         user_type="superuser",
-#         username=username,
-#         password_hash=get_password_hash(password),
-#         must_change_password=True,  # Force change on first login
-#         is_active=True,
-#     )
-#     db.add(creds)
-#     db.commit()
-
-#     logger.info(f"✅ Superuser created: {username} (ID: {superuser.superuser_id})")
-
-#     return {
-#         "success": True,
-#         "message": f"Superuser '{username}' created successfully",
-#         "superuser_id": superuser.superuser_id,
-#         "username": username,
-#         "must_change_password": True,
-#     }
-
-
-# @app.get("/admin/list-superusers", tags=["Admin Management"])
-# def list_superusers(
-#     current_user: TokenData = Depends(require_superuser), db: Session = Depends(get_db)
-# ):
-#     """
-#     **LIST ALL SUPERUSERS (Admin Only)**
-
-#     Returns list of all superuser accounts.
-#     """
-#     from app.models import models
-
-#     superusers = db.query(models.Superuser).all()
-
-#     return {
-#         "total": len(superusers),
-#         "superusers": [
-#             {
-#                 "superuser_id": su.superuser_id,
-#                 "full_name": su.full_name,
-#                 "email": su.email,
-#                 "role": su.role,
-#                 "is_active": su.is_active,
-#                 "created_at": su.created_at.isoformat() if su.created_at else None,
-#             }
-#             for su in superusers
-#         ],
-#     }
-
-
-# @app.post("/admin/reset-deo-password/{agent_code}", tags=["Admin Management"])
-# def reset_deo_password(
-#     agent_code: str,
-#     new_password: str = Form("password123"),
-#     current_user: TokenData = Depends(require_superuser),
-#     db: Session = Depends(get_db),
-# ):
-#     """
-#     🔄 **RESET DEO PASSWORD (Admin Only)**
-
-#     Resets a DEO's password to a new value (default: "password123").
-#     DEO will be forced to change password on next login.
-
-#     **Use Cases:**
-#     - DEO forgot password
-#     - Security incident
-#     - Account recovery
-#     """
-#     from app.models import models
-
-#     logger.info(
-#         f"🔄 Password reset for DEO: {agent_code} by superuser {current_user.user_id}"
-#     )
-
-#     # Find DEO
-#     deo = (
-#         db.query(models.DEOMaster)
-#         .filter(models.DEOMaster.agent_code == agent_code)
-#         .first()
-#     )
-
-#     if not deo:
-#         raise HTTPException(status_code=404, detail=f"DEO not found: {agent_code}")
-
-#     # Get or create credentials
-#     creds = (
-#         db.query(models.UserCredentials)
-#         .filter(
-#             models.UserCredentials.user_id == deo.agent_id,
-#             models.UserCredentials.user_type == "deo",
-#         )
-#         .first()
-#     )
-
-#     if not creds:
-#         # Create new credentials
-#         creds = models.UserCredentials(
-#             user_id=deo.agent_id,
-#             user_type="deo",
-#             username=agent_code,
-#             password_hash=get_password_hash(new_password),
-#             must_change_password=True,
-#             is_active=True,
-#         )
-#         db.add(creds)
-#     else:
-#         # Reset existing credentials
-#         creds.password_hash = get_password_hash(new_password)
-#         creds.must_change_password = True
-#         creds.failed_login_attempts = 0
-#         creds.account_locked_until = None
-#         creds.is_active = True
-
-#     db.commit()
-
-#     logger.info(f"✅ Password reset successful for DEO: {agent_code}")
-
-#     return {
-#         "success": True,
-#         "message": f"Password reset for DEO '{agent_code}'",
-#         "new_password": new_password,
-#         "must_change_password": True,
-#     }
-
-
-@app.post("/auth/login", response_model=TokenResponse, tags=["Authentication"])
-def login(auth_request: UserAuth, db: Session = Depends(get_db)):
-    """
-    🔐 **USER LOGIN - Database-Backed Authentication**
-
-    **Authentication Types:**
-
-    1. **SUPERUSER (Admin)**
-       - Username: From superusers table
-       - Password: Stored in user_credentials (hashed)
-       - Access: ALL recommendations
-
-    2. **DEO (Data Entry Operator)**
-       - Username: DEO agent_email (e.g., "DEO001")
-       - Password:
-         * First login: "password123" (default)
-         * After change: User-set password
-       - Access: ONLY assigned BSK
-
-    **First-Time DEO Login:**
-    - System auto-creates credentials with password "password123"
-    - Must change password after first login
-
-    **Security Features:**
-    - 🔒 Bcrypt password hashing
-    - 🔒 Account lockout after 5 failed attempts (30 min)
-    - 🔒 Last login tracking
-    - 🔒 Password change enforcement
-
-    **Example Response:**
-    ```json
-    {
-        "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-        "token_type": "bearer",
-        "role": "deo",
-        "bsk_id": 45,
-        "must_change_password": true
-    }
-    ```
-    """
-    logger.info(f"🔐 Login attempt for user: {auth_request.username}")
-
-    # Try superuser authentication first
-    user_data = authenticate_superuser(db, auth_request.username, auth_request.password)
-
-    if user_data:
-        logger.info(f"✅ Superuser authenticated: {auth_request.username}")
-
-        access_token = create_access_token(
-            data={
-                "user_id": user_data["user_id"],
-                "role": user_data["role"],
-                "username": user_data["username"],
-                "must_change_password": user_data.get("must_change_password", False),
-            }
-        )
-
-        return TokenResponse(
-            access_token=access_token,
-            role="superuser",
-            must_change_password=user_data.get("must_change_password", False),
-        )
-
-    # Try DEO authentication
-    user_data = authenticate_deo(db, auth_request.username, auth_request.password)
-
-    if user_data:
-        logger.info(
-            f"✅ DEO authenticated: {user_data['agent_email']} (BSK: {user_data['bsk_id']})"
-        )
-
-        access_token = create_access_token(
-            data={
-                "user_id": user_data["user_id"],
-                "role": user_data["role"],
-                "bsk_id": user_data["bsk_id"],
-                "agent_email": user_data["agent_email"],
-                "must_change_password": user_data.get("must_change_password", False),
-            }
-        )
-
-        return TokenResponse(
-            access_token=access_token,
-            role="deo",
-            bsk_id=user_data["bsk_id"],
-            must_change_password=user_data.get("must_change_password", False),
-        )
-
-    # Authentication failed
-    logger.warning(f"❌ Login failed for user: {auth_request.username}")
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Incorrect username or password",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
-@app.get("/auth/me", tags=["Authentication"])
-def get_current_user_info(user: TokenData = Depends(get_current_user)):
-    """
-    👤 **GET CURRENT USER INFO**
-
-    Returns information about the currently authenticated user.
-    """
-    logger.info(f"👤 User info requested: {user.role} (ID: {user.user_id})")
-
-    response = {
-        "user_id": user.user_id,
-        "role": user.role,
-        "must_change_password": user.must_change_password,
-    }
-
-    if user.role == "deo":
-        response.update(
-            {
-                "bsk_id": user.bsk_id,
-                "agent_email": user.agent_email,
-                "message": f"You have access to BSK ID: {user.bsk_id}",
-            }
-        )
-    else:
-        response["message"] = "You have access to all recommendations"
-
-    return response
-
-
-@app.post("/auth/change-password", tags=["Authentication"])
-def change_user_password(
-    password_change: PasswordChange,
-    user: TokenData = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    🔑 **CHANGE PASSWORD**
-
-    Allows users to change their password.
-
-    **Requirements:**
-    - Must provide current password
-    - New password must be at least 8 characters
-
-    **Request Body:**
-    ```json
-    {
-        "current_password": "password123",
-        "new_password": "MyNewSecurePassword123!"
-    }
-    ```
-
-    **Use Cases:**
-    - First-time DEO changing from default password
-    - Regular password updates
-    - Security compliance
-    """
-    logger.info(f"🔑 Password change request for {user.role}: {user.user_id}")
-
-    success = change_password(
-        db=db,
-        user_id=user.user_id,
-        user_type=user.role if user.role == "deo" else "superuser",
-        current_password=password_change.current_password,
-        new_password=password_change.new_password,
-    )
-
-    if success:
-        return {
-            "success": True,
-            "message": "Password changed successfully. Please login again with your new password.",
-        }
-
-    raise HTTPException(status_code=500, detail="Password change failed")
+from sqlalchemy import text
+
+
+@app.get("/health")
+async def health_check():
+    health_status = {"status": "healthy", "service": "TrainAI", "database": "unknown"}
+
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        health_status["database"] = "connected"
+    except Exception as e:
+        health_status["database"] = "error"
+        health_status["status"] = "unhealthy"
+
+    return health_status
 
 
 # ============================================================================
-# ADMIN ENDPOINTS - Superuser Management
-# ============================================================================
-
-
-@app.post("/admin/create-superuser", tags=["Admin Management"])
-def create_superuser(
-    full_name: str = Form(...),
-    email: str = Form(...),
-    username: str = Form(...),
-    password: str = Form(...),
-    role: str = Form("admin", description="admin, super_admin, analyst"),
-    phone: Optional[str] = Form(None),
-    current_user: TokenData = Depends(require_superuser),
-    db: Session = Depends(get_db),
-):
-    """
-    👑 **CREATE NEW SUPERUSER (Admin Only)**
-
-    Only existing superusers can create new superuser accounts.
-
-    **Fields:**
-    - full_name: Full name
-    - email: Email address (unique)
-    - username: Login username (unique)
-    - password: Initial password (min 8 chars)
-    - role: admin, super_admin, analyst
-    - phone: Optional phone number
-    """
-    # from app.models import models
-
-    logger.info(f"👑 Creating new superuser: {username} by {current_user.user_id}")
-
-    # Check if username already exists
-    existing = (
-        db.query(models.UserCredentials)
-        .filter(models.UserCredentials.username == username)
-        .first()
-    )
-
-    if existing:
-        raise HTTPException(status_code=400, detail="Username already exists")
-
-    # Check if email already exists
-    existing_email = (
-        db.query(models.Superuser).filter(models.Superuser.email == email).first()
-    )
-
-    if existing_email:
-        raise HTTPException(status_code=400, detail="Email already exists")
-
-    # Create superuser profile
-    superuser = models.Superuser(
-        full_name=full_name,
-        email=email,
-        phone=phone,
-        role=role,
-        is_active=True,
-        created_by=current_user.user_id,
-    )
-    db.add(superuser)
-    db.flush()  # Get superuser_id
-
-    # Create credentials
-    creds = models.UserCredentials(
-        user_id=superuser.superuser_id,
-        user_type="superuser",
-        username=username,
-        password_hash=get_password_hash(password),
-        must_change_password=True,  # Force change on first login
-        is_active=True,
-    )
-    db.add(creds)
-    db.commit()
-
-    logger.info(f"✅ Superuser created: {username} (ID: {superuser.superuser_id})")
-
-    return {
-        "success": True,
-        "message": f"Superuser '{username}' created successfully",
-        "superuser_id": superuser.superuser_id,
-        "username": username,
-        "must_change_password": True,
-    }
-
-
-@app.get("/admin/list-superusers", tags=["Admin Management"])
-def list_superusers(
-    current_user: TokenData = Depends(require_superuser), db: Session = Depends(get_db)
-):
-    """
-    📋 **LIST ALL SUPERUSERS (Admin Only)**
-
-    Returns list of all superuser accounts.
-    """
-    from app.models import models
-
-    superusers = db.query(models.Superuser).all()
-
-    return {
-        "total": len(superusers),
-        "superusers": [
-            {
-                "superuser_id": su.superuser_id,
-                "full_name": su.full_name,
-                "email": su.email,
-                "role": su.role,
-                "is_active": su.is_active,
-                "created_at": su.created_at.isoformat() if su.created_at else None,
-            }
-            for su in superusers
-        ],
-    }
-
-
-@app.post("/admin/reset-deo-password/{agent_email}", tags=["Admin Management"])
-def reset_deo_password(
-    agent_email: str,
-    new_password: str = Form("password123"),
-    current_user: TokenData = Depends(require_superuser),
-    db: Session = Depends(get_db),
-):
-    """
-    🔄 **RESET DEO PASSWORD (Admin Only)**
-
-    Resets a DEO's password to a new value (default: "password123").
-    DEO will be forced to change password on next login.
-
-    **Use Cases:**
-    - DEO forgot password
-    - Security incident
-    - Account recovery
-    """
-    from app.models import models
-
-    logger.info(
-        f"🔄 Password reset for DEO: {agent_email} by superuser {current_user.user_id}"
-    )
-
-    # Find DEO
-    deo = (
-        db.query(models.DEOMaster)
-        .filter(models.DEOMaster.agent_email == agent_email)
-        .first()
-    )
-
-    if not deo:
-        raise HTTPException(status_code=404, detail=f"DEO not found: {agent_email}")
-
-    # Get or create credentials
-    creds = (
-        db.query(models.UserCredentials)
-        .filter(
-            models.UserCredentials.user_id == deo.agent_id,
-            models.UserCredentials.user_type == "deo",
-        )
-        .first()
-    )
-
-    if not creds:
-        # Create new credentials
-        creds = models.UserCredentials(
-            user_id=deo.agent_id,
-            user_type="deo",
-            username=agent_email,
-            password_hash=get_password_hash(new_password),
-            must_change_password=True,
-            is_active=True,
-        )
-        db.add(creds)
-    else:
-        # Reset existing credentials
-        creds.password_hash = get_password_hash(new_password)
-        creds.must_change_password = True
-        creds.failed_login_attempts = 0
-        creds.account_locked_until = None
-        creds.is_active = True
-
-    db.commit()
-
-    logger.info(f"✅ Password reset successful for DEO: {agent_email}")
-
-    return {
-        "success": True,
-        "message": f"Password reset for DEO '{agent_email}'",
-        "new_password": new_password,
-        "must_change_password": True,
-    }
-
-
-
-# ============================================================================
-# SERVICE TRAINING RECOMMENDATION ENDPOINT WITH AUTH
+# SERVICE TRAINING RECOMMENDATION ENDPOINT
 # ============================================================================
 
 
 # ENDPOINT 1: Training Recommendation Endpoint
-@app.get("/service_training_recommendation/", tags=["Analytics"])
+@app.get("/service_training_recommendation/", tags=["Training Analytics"])
 def service_training_recommendation(
-    # Authentication (REQUIRED)
-    user: TokenData = Depends(get_current_user),
-    # Computation control
-    precompute: bool = Query(
-        False,
-        description="If TRUE: Recompute from  provisions (30-180s). If FALSE: Use precomputed data (50-100ms)",
-    ),
     # Response format
     summary_only: bool = Query(
         False, description="Return summary statistics instead of full details"
@@ -931,109 +183,79 @@ def service_training_recommendation(
     db: Session = Depends(get_db),
 ):
     """
-    🔐 **AUTHENTICATED TRAINING RECOMMENDATIONS**
+    Get training recommendations for BSKs from the precomputed cache.
     
-    **AUTHENTICATION REQUIRED:**
-    - Must include JWT token in Authorization header
-    - `Authorization: Bearer <token>`
+    **✨ This endpoint is READ-ONLY and FAST (50-100ms)**
+    - Always uses cached data from the last precompute
+    - No heavy computation
+    - Ideal for dashboards and real-time queries
     
-    **ROLE-BASED ACCESS:**
+    **🔄 To refresh the data:**
+    - Automatic: Every Sunday at 3:00 AM (scheduled)
+    - Manual: POST /precompute/training-recommendations
     
-    **SUPERUSER:**
-    - Sees ALL recommendations across all BSKs
-    - Can apply filters (district, priority, etc.)
-    - Can trigger precompute
-    
-    **DEO:**
-    - Sees ONLY recommendations for their assigned BSK
-    - Filters are ignored (always shows their BSK)
-    - Cannot trigger precompute (returns error)
-    
-    **Response Structure:**
-    - Superuser: Full list of all BSKs
-    - DEO: Single recommendation for their BSK 
-    
+    **Features:**
+    - View all BSK recommendations
+    - Filter by district, priority score, or minimum training services
+    - Each service recommendation includes training video URL if available
+    - Summary mode for quick statistics
+
+    **Video Integration:**
+    - If a service has training videos, the latest video URL is included
+    - Video URL format: `/videos/<service_name>/<version>.mp4`
+    - Only completed videos (is_done=True) are shown
+
     **Example Usage:**
     ```bash
-    # 1. Login first
-    curl -X POST http://api/auth/login \
-      -H "Content-Type: application/json" \
-      -d '{"username": "admin", "password": "admin123"}'
-    
-    # 2. Use token in subsequent requests
-    curl -X GET http://api/service_training_recommendation/ \
-      -H "Authorization: Bearer <your-token>"
+    # Get all recommendations (fast - from cache)
+    curl http://api/service_training_recommendation/
+
+    # Filter by district
+    curl "http://api/service_training_recommendation/?district_filter=Kolkata"
+
+    # Get summary only
+    curl "http://api/service_training_recommendation/?summary_only=true"
+
+    # Filter high priority BSKs
+    curl "http://api/service_training_recommendation/?min_priority=100"
+
+    # To refresh data, use the POST endpoint:
+    curl -X POST http://api/precompute/training-recommendations
     ```
+
+    **Cache Info:**
+    - Updated: Every Sunday at 3:00 AM
+    - Window: Last 365 days of provisions
+    - Manual refresh: POST /precompute/training-recommendations
     """
-    logger.info(
-        f"🔐 GET /service_training_recommendation/ - "
-        f"User: {user.role} (ID: {user.user_id}), "
-        f"precompute={precompute}"
-    )
-
-    # AUTHORIZATION CHECK: Precompute only for superuser
-    if precompute and user.role != "superuser":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superusers can trigger precompute. Please contact admin.",
-        )
-
-    # MODE 1: PRECOMPUTE (Superuser only)
-    if precompute:
-        logger.info("PRECOMPUTE MODE: Starting full computation from scratch...")
-        computation_result = compute_and_cache_recommendations(
-            db=db, n_neighbors=10, top_n_services=10, min_provision_threshold=5
-        )
-        logger.info(
-            "Precomputation complete, now fetching results from recently completed analysis..."
-        )
-
-    # MODE 2: FETCH FROM CACHE
+    logger.info("📊 GET /service_training_recommendation/ - Fetching from cache")
 
     # Build base query
     base_query = db.query(models.TrainingRecommendationCache)
 
-    # ROLE-BASED FILTERING
-    if user.role == "deo":
-        # DEO: Force filter to their BSK only
-        if user.bsk_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail="DEO user has no BSK assignment. Please contact admin.",
-            )
-
+    # Apply optional filters
+    if district_filter:
+        bsks_in_district = (
+            db.query(models.BSKMaster.bsk_id)
+            .filter(models.BSKMaster.district_name.ilike(f"%{district_filter}%"))
+            .all()
+        )
+        bsk_ids = [b[0] for b in bsks_in_district]
         base_query = base_query.filter(
-            models.TrainingRecommendationCache.bsk_id == user.bsk_id
+            models.TrainingRecommendationCache.bsk_id.in_(bsk_ids)
+        )
+        logger.info(f"Filtering by district: {district_filter} ({len(bsk_ids)} BSKs)")
+
+    if min_priority is not None:
+        base_query = base_query.filter(
+            models.TrainingRecommendationCache.priority_score >= min_priority
         )
 
-        logger.info(f"DEO mode: Filtering to BSK {user.bsk_id} only")
-
-    else:  # Superuser
-        # Apply optional filters for super user
-        if district_filter:
-            bsks_in_district = (
-                db.query(models.BSKMaster.bsk_id)
-                .filter(models.BSKMaster.district_name.ilike(f"%{district_filter}%"))
-                .all()
-            )
-            bsk_ids = [b[0] for b in bsks_in_district]
-            base_query = base_query.filter(
-                models.TrainingRecommendationCache.bsk_id.in_(bsk_ids)
-            )
-            logger.info(
-                f"Filtering by district: {district_filter} ({len(bsk_ids)} BSKs)"
-            )
-
-        if min_priority is not None:
-            base_query = base_query.filter(
-                models.TrainingRecommendationCache.priority_score >= min_priority
-            )
-
-        if min_training_services is not None:
-            base_query = base_query.filter(
-                models.TrainingRecommendationCache.total_training_services
-                >= min_training_services
-            )
+    if min_training_services is not None:
+        base_query = base_query.filter(
+            models.TrainingRecommendationCache.total_training_services
+            >= min_training_services
+        )
 
     # Get total count
     total_count = base_query.count()
@@ -1041,23 +263,22 @@ def service_training_recommendation(
     if total_count == 0:
         return {
             "status": "success",
-            "message": (
-                "No recommendations found matching your filters."
-                if user.role == "superuser"
-                else "No recommendations found for your BSK."
-            ),
-            "user_role": user.role,
+            "message": "No recommendations found matching your filters. To refresh data, use POST /precompute/training-recommendations",
             "recommendations": [],
+            "cache_info": {
+                "refresh_endpoint": "POST /precompute/training-recommendations",
+                "automatic_schedule": "Every Sunday at 3:00 AM",
+            }
         }
 
-    # Fetch all results (no pagination)
+    # Fetch all results
     precomp_res = base_query.order_by(
         desc(models.TrainingRecommendationCache.priority_score)
     ).all()
 
-    logger.info(f"Retrieved {len(precomp_res)} recommendations for {user.role}")
+    logger.info(f"Retrieved {len(precomp_res)} recommendations from cache")
 
-    # Enrich with master table data
+    # Enrich with master table data AND video URLs
     recommendations = [enrich_recommendation(rec, db) for rec in precomp_res]
 
     # Get cache timestamp
@@ -1069,7 +290,6 @@ def service_training_recommendation(
 
         return {
             "status": "success",
-            "user_role": user.role,
             "summary": {
                 "total_bsks_needing_training": total_count,
                 "total_provisions": sum(r.total_provisions for r in all_matching),
@@ -1101,98 +321,28 @@ def service_training_recommendation(
             ],
             "cache_info": {
                 "last_updated": cache_timestamp,
-                "using_cached_data": not precompute,
+                "sliding_window": "365 days (automatic)",
+                "refresh_endpoint": "POST /precompute/training-recommendations",
+                "automatic_schedule": "Every Sunday at 3:00 AM",
             },
         }
 
     # FULL RESPONSE
-    response = {
+    return {
         "status": "success",
-        "user_role": user.role,
         "total_recommendations": total_count,
         "recommendations": recommendations,
         "cache_info": {
             "last_updated": cache_timestamp,
-            "using_cached_data": not precompute,
+            "sliding_window": "365 days (automatic)",
+            "refresh_endpoint": "POST /precompute/training-recommendations",
+            "automatic_schedule": "Every Sunday at 3:00 AM",
         },
     }
 
-    # Add DEO-specific info
-    if user.role == "deo":
-        response["deo_info"] = {
-            "agent_email": user.agent_email,
-            "assigned_bsk_id": user.bsk_id,
-            "message": f"Showing recommendations for your assigned BSK only (ID: {user.bsk_id})",
-        }
 
-    # Add computation result if precompute was run
-    if precompute:
-        response["cache_info"]["computation_result"] = computation_result
-
-    return response
-
-
-# ENDPOINT 2: Training Recommendation Status Endpoint
-@app.get("/training_recommendation_status/", tags=["Analytics"])
-def get_cache_status(db: Session = Depends(get_db)):
-    """
-    Check current stored status and find details about it.
-    Shows:
-    - When precompute=True was last computed
-    - How long computation took
-    - Number of total precompute=True recommendations
-    """
-    # Get last successful computation whose status is completed
-    last_comp = (
-        db.query(models.RecommendationComputationLog)
-        .filter(models.RecommendationComputationLog.status == "completed")
-        .order_by(desc(models.RecommendationComputationLog.computation_timestamp))
-        .first()
-    )
-
-    # Count cached recommendations
-    total_cached = db.query(models.TrainingRecommendationCache).count()
-    if last_comp and last_comp.computation_timestamp:
-        # Use timezone-aware datetime for comparison
-        now = (
-            datetime.now(timezone.utc)
-            if last_comp.computation_timestamp.tzinfo
-            else datetime.now()
-        )
-        cache_age_hours = (now - last_comp.computation_timestamp).total_seconds() / 3600
-        # is_stale = cache_age_hours > 24  # Consider stale if older than 24 hours
-        return {
-            "last_computation": {
-                "timestamp": last_comp.computation_timestamp.isoformat(),
-                "duration_seconds": (
-                    round(last_comp.computation_duration_seconds, 2)
-                    if last_comp.computation_duration_seconds
-                    else None
-                ),
-                "bsks_analyzed": last_comp.total_bsks_analyzed,
-                "provisions_processed": last_comp.total_provisions_processed,
-                "recommendations_generated": last_comp.total_recommendations_generated,
-            },
-            "details": {
-                "total_recommendations": total_cached,
-                "age_hours": round(cache_age_hours, 1),
-            },
-        }
-    # case where no valid computation exists
-    return {
-        "cache_status": "empty",
-        "last_computation": None,
-        "cache": {
-            "total_recommendations": total_cached,
-            "age_hours": None,
-            "is_stale": None,
-        },
-        "message": "No cache found. Run /service_training_recommendation/?precompute=true to generate recommendations.",
-    }
-
-
-# ENDPOINT 3: Training Recommendation all history logs Endpoint
-@app.get("/training_recommendation_history/", tags=["Analytics"])
+# ENDPOINT 2: Training Recommendation all history logs Endpoint
+@app.get("/training_recommendation_history/", tags=["Training Analytics"])
 def get_computation_history(
     limit: int = Query(10, ge=1, description="Number of logs to return"),
     db: Session = Depends(get_db),
@@ -1231,8 +381,8 @@ def get_computation_history(
     }
 
 
-# ENDPOINT 4: Underperforming BSKs Endpoint
-@app.get("/underperforming_bsks/", tags=["Analytics"])
+# ENDPOINT 3: Underperforming BSKs Endpoint
+@app.get("/underperforming_bsks/", tags=["Training Analytics"])
 def get_underperforming_bsks(
     num_bsks: int = Query(50, description="Number of BSKs to return"),
     sort_order: str = Query(
@@ -1288,12 +438,17 @@ def get_underperforming_bsks(
     return result_df.to_dict(orient="records")
 
 
-# ============================================================================
+# ==============================================================================================
 # VIDEO GENERATION Endpoints
+# ==============================================================================================
+
+
 # ============================================================================
-# ENDPOINT 1: Generate Video from Form
-@app.post("/bsk_portal/generate_video_from_form/", tags=["BSK Portal Integration"])
-async def bsk_generate_video_from_form(
+# 1. GENERATE VIDEO FROM FORM (ASYNC)
+# ============================================================================
+@app.post("/bsk_portal/generate_video_from_form/", tags=["Training video Generation"])
+async def bsk_generate_video_from_form_async(
+    background_tasks: BackgroundTasks,
     service_name: str = Form(
         ..., description="Service name (must match service_master)"
     ),
@@ -1316,37 +471,45 @@ async def bsk_generate_video_from_form(
     db: Session = Depends(get_db),
 ):
     """
-    🎥 **GENERATE VIDEO FROM FORM WITH AI ENHANCEMENT**
+    🎥 **ASYNC VIDEO GENERATION FROM FORM**
 
-    NEW Process:
-    1. Validates required form fields (5 mandatory fields)
-    2. Validates service name against service_master
-    3. **USES GEMINI AI to enhance and structure content into professional slides**
-    4. Generates video IN-MEMORY from AI-enhanced slides
-    5. Saves video to local filesystem
-    6. Returns video URL and metadata
+    **NEW WORKFLOW:**
+    1. ✅ Validates form data and service name
+    2. ✅ Generates AI-enhanced slides (quick, ~5 seconds)
+    3. ✅ Returns unique video_id IMMEDIATELY
+    4. 🔄 Video generation runs in background (~20 minutes)
+    5. 📹 User polls /get_completed_videos to retrieve finished video
 
-    Required Fields:
+    **Returns immediately with:**
+    - `video_id`: Unique identifier to track your video
+    - `status`: "pending" or "processing"
+    - `estimated_time_minutes`: Expected completion time (~20 mins)
+
+    **To get your video:**
+    - Poll: `GET /bsk_portal/get_completed_videos/`
+    - Check specific: `GET /bsk_portal/video_status/{video_id}`
+
+    **Benefits:**
+    - ⚡ No timeout issues
+    - 🔄 Multiple videos can generate simultaneously
+    - 📊 Track progress via status endpoint
+    - 🎯 Retrieve all completed videos at once
+
+    **Required Fields:**
     - service_name
     - service_description
     - how_to_apply
     - eligibility_criteria
     - required_documents
-
-    Optional Fields (will be included in AI processing if provided):
-    - fees_and_timeline
-    - operator_tips
-    - troubleshooting
-    - service_link
     """
 
     logger.info("=" * 80)
-    logger.info("🎬 BSK PORTAL - AI-ENHANCED VIDEO GENERATION FROM FORM")
+    logger.info("🚀 ASYNC VIDEO GENERATION - FORM SUBMISSION")
     logger.info("=" * 80)
 
     try:
         # ================================================================
-        # STEP 1: Build service content dictionary
+        # STEP 1: Build and validate form content
         # ================================================================
         service_content = {
             "service_name": service_name.strip(),
@@ -1360,9 +523,6 @@ async def bsk_generate_video_from_form(
             "service_link": service_link.strip() if service_link else "",
         }
 
-        # ================================================================
-        # STEP 2: Validate required fields
-        # ================================================================
         logger.info("🔍 Validating form content...")
         is_valid, validation_msg = validate_form_content(service_content)
 
@@ -1373,7 +533,7 @@ async def bsk_generate_video_from_form(
         logger.info("✅ Form validation passed")
 
         # ================================================================
-        # STEP 3: Validate service name against database
+        # STEP 2: Validate service name
         # ================================================================
         logger.info(f"🔍 Validating service name: {service_name}")
         matched_service_id, official_service_name = validate_and_match_service(
@@ -1389,19 +549,12 @@ async def bsk_generate_video_from_form(
         logger.info(
             f"✅ Matched Service: {official_service_name} (ID: {matched_service_id})"
         )
-
-        # Update service_content with official name
         service_content["service_name"] = official_service_name
 
         # ================================================================
-        # STEP 4: USE GEMINI AI TO CREATE ENHANCED SLIDES
+        # STEP 3: Generate AI-enhanced slides (QUICK - runs synchronously)
         # ================================================================
-        logger.info("🤖 Enhancing content with Gemini AI...")
-        logger.info(f"   📝 Service: {official_service_name}")
-        logger.info(
-            f"   📋 Processing {len([k for k, v in service_content.items() if v])} filled fields"
-        )
-
+        logger.info("🤖 Generating AI-enhanced slides...")
         try:
             slide_data = generate_slides_from_form(service_content)
             slides = slide_data.get("slides", [])
@@ -1409,11 +562,7 @@ async def bsk_generate_video_from_form(
             if not slides:
                 raise ValueError("No slides generated by AI")
 
-            logger.info(f"✅ AI generated {len(slides)} professional training slides")
-
-            # Log slide titles for verification
-            for i, slide in enumerate(slides, 1):
-                logger.info(f"   Slide {i}: {slide.get('title', 'Untitled')}")
+            logger.info(f"✅ AI generated {len(slides)} professional slides")
 
         except Exception as e:
             logger.error(f"❌ AI enhancement failed: {str(e)}")
@@ -1422,84 +571,54 @@ async def bsk_generate_video_from_form(
             )
 
         # ================================================================
-        # STEP 5: Generate video from AI-enhanced slides
+        # STEP 4: Create video generation request in queue
         # ================================================================
-        logger.info("🎬 Generating video from AI-enhanced slides...")
-        result = await generate_video_from_slides(slides, official_service_name)
-        video_bytes = result["video_bytes"]
-
-        logger.info(f"✅ Video generated successfully")
-        logger.info(f"   📊 Size: {result['file_size_mb']} MB")
-        logger.info(f"   ⏱️  Duration: ~{result['duration_estimate']} seconds")
-        logger.info(f"   🎞️  Slides: {result['total_slides']}")
-
-        # ================================================================
-        # STEP 6: Calculate next version
-        # ================================================================
-        next_version = get_next_version(matched_service_id, official_service_name, db)
-        logger.info(f"📌 Video version: v{next_version}")
-
-        # ================================================================
-        # STEP 7: Save video to filesystem
-        # ================================================================
-        logger.info("💾 Saving video to filesystem...")
-        video_info = save_video_to_filesystem(
-            video_bytes, official_service_name, next_version
-        )
-        logger.info(f"✅ Video saved: {video_info['video_path']}")
-
-        # ================================================================
-        # STEP 8: Create database record
-        # ===============================
-        # =================================
-        logger.info("📝 Creating database record...")
-        video_record = models.ServiceVideo(
+        logger.info("📝 Creating video generation request...")
+        video_id = queue_manager.create_video_request(
+            db=db,
             service_id=matched_service_id,
-            service_name_metadata=official_service_name,
-            video_version=next_version,
-            source_type="form_ai_enhanced",  # New source type
-            video_path=video_info["video_path"],
-            video_url=f"/api/videos/{official_service_name.replace(' ', '_')}/{next_version}",
-            file_size_mb=result["file_size_mb"],
-            duration_seconds=result["duration_estimate"],
-            total_slides=result["total_slides"],
-            is_new=True,
-            is_done=True,
-            created_at=datetime.now(),
+            service_name=official_service_name,
+            source_type="form_ai_enhanced",
+            request_data=service_content,  # Store for reference
         )
 
-        db.add(video_record)
-        db.commit()
-        db.refresh(video_record)
-
-        # Mark previous versions as old
-        db.query(models.ServiceVideo).filter(
-            models.ServiceVideo.service_id == matched_service_id,
-            models.ServiceVideo.video_version != next_version,
-        ).update({"is_new": False}, synchronize_session=False)
-        db.commit()
-
-        logger.info(f"✅ Database record created (ID: {video_record.video_id})")
+        logger.info(f"✅ Video request created: {video_id}")
 
         # ================================================================
-        # STEP 9: Return response
+        # STEP 5: Start background video generation
+        # ================================================================
+        logger.info("🎬 Starting background video generation...")
+        background_tasks.add_task(
+            background_video_generation,
+            video_id=video_id,
+            slides=slides,
+            service_name=official_service_name,
+            service_id=matched_service_id,
+            db=db,
+        )
+
+        # ================================================================
+        # STEP 6: Return immediately with video_id
         # ================================================================
         logger.info("=" * 80)
-        logger.info("✅ VIDEO GENERATION COMPLETE")
+        logger.info("✅ REQUEST ACCEPTED - VIDEO GENERATION IN PROGRESS")
         logger.info("=" * 80)
 
         return {
             "success": True,
-            "message": "Video generated successfully with AI enhancement",
+            "message": "Video generation started in background",
+            "video_id": video_id,
             "service_id": matched_service_id,
             "service_name": official_service_name,
-            "video_version": next_version,
-            "video_url": f"/api/videos/{official_service_name.replace(' ', '_')}/{next_version}",
-            "video_id": video_record.video_id,
-            "total_slides": result["total_slides"],
-            "file_size_mb": result["file_size_mb"],
-            "duration_seconds": result["duration_estimate"],
-            "ai_enhanced": True,  # Flag to indicate AI was used
+            "status": "pending",
+            "total_slides": len(slides),
+            "estimated_time_minutes": len(slides) * 2,  # Rough estimate
+            "next_steps": {
+                "check_status": f"GET /bsk_portal/video_status/{video_id}",
+                "get_completed": "GET /bsk_portal/get_completed_videos/",
+                "poll_interval": "Check every 2-3 minutes",
+            },
+            "note": "Video generation takes ~20 minutes. Use the endpoints above to check progress and retrieve your video.",
         }
 
     except HTTPException:
@@ -1509,192 +628,48 @@ async def bsk_generate_video_from_form(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ENDPOINT 2: Generate Video from PDF
-# @app.post("/bsk_portal/generate_video_from_pdf/", tags=["BSK Portal Integration"])
-# async def bsk_generate_video_from_pdf(
-#     pdf_file: UploadFile = File(...),
-#     service_name: str = Form(
-#         ..., description="Service name (must match service_master)"
-#     ),
-#     use_openai: bool = Form(False),
-#     db: Session = Depends(get_db),
-# ):
-#     """
-#     🎥 **GENERATE AND SAVE VIDEO FROM PDF**
-
-#     Process:
-#     1. Validates service name
-#     2. Extracts content from PDF
-#     3. AI generates slides
-#     4. Generates video IN-MEMORY
-#     5. SAVES video to local filesystem (videos/<service_name>/<version>.mp4)
-#     6. STREAMS video to client
-#     7. Logs generation metadata with file path
-
-#     Returns: StreamingResponse with video bytes + metadata headers
-#     """
-
-#     logger.info("=" * 80)
-#     logger.info("🎬 BSK PORTAL - PDF VIDEO GENERATION (WITH LOCAL STORAGE)")
-#     logger.info("=" * 80)
-
-#     temp_pdf_path = None
-
-#     try:
-#         # STEP 1: Validate service
-#         matched_service_id, official_service_name = validate_and_match_service(
-#             service_name, db
-#         )
-
-#         if not matched_service_id:
-#             raise HTTPException(
-#                 status_code=400,
-#                 detail=f"Service '{service_name}' not found in service_master",
-#             )
-
-#         logger.info(
-#             f"✅ Matched Service: {official_service_name} (ID: {matched_service_id})"
-#         )
-
-#         # STEP 2: Validate and save PDF temporarily
-#         if not pdf_file.filename.lower().endswith(".pdf"):
-#             raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
-#         temp_id = str(uuid.uuid4())[:8]
-#         pdf_filename = f"{temp_id}_{pdf_file.filename}"
-#         temp_pdf_path = UPLOAD_DIR / pdf_filename
-
-#         with open(temp_pdf_path, "wb") as buffer:
-#             shutil.copyfileobj(pdf_file.file, buffer)
-
-#         file_size_mb = os.path.getsize(temp_pdf_path) / (1024 * 1024)
-#         if file_size_mb > 50:
-#             raise HTTPException(status_code=400, detail="PDF too large (max 50MB)")
-
-#         # STEP 3: Extract text from PDF
-#         logger.info("📖 Extracting text from PDF...")
-#         raw_pages = extract_raw_content(str(temp_pdf_path))
-#         raw_text = "\n\n".join(["\n".join(page["lines"]) for page in raw_pages])
-
-#         if not raw_text.strip():
-#             raise ValueError("No text content extracted from PDF")
-
-#         logger.info(f"✅ Extracted {len(raw_text)} characters")
-
-#         # STEP 4: Generate slides with AI
-#         logger.info("🤖 Generating slides with AI...")
-#         if use_openai:
-#             from services.openai_service import (
-#                 generate_slides_from_raw as openai_generate,
-#             )
-
-#             slide_data = openai_generate(raw_text)
-#         else:
-#             slide_data = generate_slides_from_raw(raw_text)
-
-#         slides = slide_data.get("slides", [])
-#         logger.info(f"✅ Generated {len(slides)} slides")
-
-#         # STEP 5: Generate video IN-MEMORY
-#         logger.info("🎬 Generating video...")
-#         result = await generate_video_from_slides(slides, official_service_name)
-#         video_bytes = result["video_bytes"]
-
-#         # STEP 6: Calculate next version
-#         next_version = get_next_version(matched_service_id, official_service_name, db)
-
-#         # STEP 7: Save video to filesystem
-#         video_info = save_video_to_filesystem(
-#             video_bytes, official_service_name, next_version
-#         )
-
-#         # STEP 8: Log generation metadata WITH FILE PATH
-#         video_record = models.ServiceVideo(
-#             service_id=matched_service_id,
-#             service_name_metadata=official_service_name,
-#             video_version=next_version,
-#             source_type="pdf_automatic",
-#             video_path=video_info["video_path"],  # ✅ Store file path
-#             video_url=f"/api/videos/{video_info['relative_path']}",  # ✅ Store URL path
-#             file_size_mb=result["file_size_mb"],
-#             duration_seconds=result["duration_estimate"],
-#             total_slides=result["total_slides"],
-#             is_new=True,
-#             is_done=True,
-#             created_at=datetime.now(),
-#         )
-
-#         db.add(video_record)
-#         db.commit()
-#         db.refresh(video_record)
-
-#         # STEP 9: Mark previous versions as old
-#         db.query(models.ServiceVideo).filter(
-#             models.ServiceVideo.service_id == matched_service_id,
-#             models.ServiceVideo.video_version != next_version,
-#         ).update({"is_new": False}, synchronize_session=False)
-#         db.commit()
-
-#         logger.info(
-#             f"✅ Video generated and saved! Log ID: {video_record.video_id}, Path: {video_info['video_path']}"
-#         )
-#         return {
-#             "success": True,
-#             "message": "Video generated successfully with AI enhancement",
-#             "service_id": matched_service_id,
-#             "service_name": official_service_name,
-#             "video_version": next_version,
-#             "video_url": f"/api/videos/{official_service_name.replace(' ', '_')}/{next_version}",
-#             "video_id": video_record.video_id,
-#             "total_slides": result["total_slides"],
-#             "file_size_mb": result["file_size_mb"],
-#             "duration_seconds": result["duration_estimate"],
-#             "ai_enhanced": True,  # Flag to indicate AI was used
-#         }
-
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"❌ Unexpected error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=str(e))
-#     #     # STEP 11: Stream video to client
-#     #     video_bytes.seek(0)  # Reset buffer to start
-
-#     #     return StreamingResponse(
-#     #         video_bytes,
-#     #         media_type="video/mp4",
-#     #         headers={
-#     #             "Content-Disposition": f"attachment; filename={official_service_name.replace(' ', '_')}_v{next_version}.mp4",
-#     #             # Metadata headers
-#     #             "X-Video-ID": str(video_record.video_id),
-#     #             "X-Service-ID": str(matched_service_id),
-#     #             "X-Video-Version": str(next_version),
-#     #             "X-Total-Slides": str(result["total_slides"]),
-#     #             "X-Duration-Seconds": str(result["duration_estimate"]),
-#     #             "X-Video-URL": video_record.video_url,  # ✅ Include URL in headers
-#     #         },
-#     #     )
-
-#     # except HTTPException:
-#     #     raise
-#     # except Exception as e:
-#     #     logger.error(f"❌ Error: {str(e)}")
-#     #     # Cleanup PDF on error
-#     #     if temp_pdf_path and os.path.exists(temp_pdf_path):
-#     #         os.remove(temp_pdf_path)
-#     #     raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/generate_video_from_pdf")
-async def generate_video_from_pdf(pdf_file: UploadFile = File(...),service_name: str = Form(
+# ============================================================================
+# 2. GENERATE VIDEO FROM PDF (ASYNC)
+# ============================================================================
+@app.post("/bsk_portal/generate_video_from_pdf/", tags=["Training video Generation"])
+async def generate_video_from_pdf_async(
+    background_tasks: BackgroundTasks,
+    pdf_file: UploadFile = File(...),
+    service_name: str = Form(
         ..., description="Service name (must match service_master)"
     ),
     use_openai: bool = Form(False),
-    db: Session = Depends(get_db),):
+    db: Session = Depends(get_db),
+):
     """
-    Generate training video from government service PDF
+    🎥 **ASYNC VIDEO GENERATION FROM PDF**
+
+    **NEW WORKFLOW:**
+    1. ✅ Uploads and validates PDF
+    2. ✅ Extracts and validates content
+    3. ✅ Generates AI-enhanced slides (quick, ~10 seconds)
+    4. ✅ Returns unique video_id IMMEDIATELY
+    5. 🔄 Video generation runs in background (~20 minutes)
+    6. 📹 User polls /get_completed_videos to retrieve finished video
+
+    **Returns immediately with:**
+    - `video_id`: Unique identifier to track your video
+    - `status`: "pending" or "processing"
+    - `estimated_time_minutes`: Expected completion time
+
+    **To get your video:**
+    - Poll: `GET /bsk_portal/get_completed_videos/`
+    - Check specific: `GET /bsk_portal/video_status/{video_id}`
     """
-    
+
+    logger.info("=" * 80)
+    logger.info("🚀 ASYNC VIDEO GENERATION - PDF UPLOAD")
+    logger.info("=" * 80)
+
     try:
+        # ================================================================
+        # STEP 1: Validate service name
+        # ================================================================
         matched_service_id, official_service_name = validate_and_match_service(
             service_name, db
         )
@@ -1708,40 +683,41 @@ async def generate_video_from_pdf(pdf_file: UploadFile = File(...),service_name:
         logger.info(
             f"✅ Matched Service: {official_service_name} (ID: {matched_service_id})"
         )
-        # Save uploaded PDF
+
+        # ================================================================
+        # STEP 2: Save and process PDF
+        # ================================================================
+        logger.info("📄 Processing PDF...")
         pdf_path = f"uploads/{pdf_file.filename}"
         os.makedirs("uploads", exist_ok=True)
-        
+
         with open(pdf_path, "wb") as f:
             f.write(await pdf_file.read())
-        
-        # -------------------------------------------------
-        # STEP 1: EXTRACT CONTENT
-        # -------------------------------------------------
-        print("📄 Extracting PDF content...")
-        # pdf_pages = extract_raw_content(pdf_path)
+
+        # Extract content
+        logger.info("📄 Extracting PDF content...")
         raw_pages = extract_raw_content(str(pdf_path))
         raw_text = "\n\n".join(["\n".join(page["lines"]) for page in raw_pages])
 
-        # -------------------------------------------------
-        # STEP 2: VALIDATE CONTENT (NEW!)
-        # -------------------------------------------------
-        print("🔍 Validating PDF content...")
+        # Validate content
+        logger.info("🔍 Validating PDF content...")
         is_valid, validation_message = validate_pdf_content(raw_pages)
-        
+
         if not is_valid:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": "Invalid PDF Content",
                     "message": validation_message,
-                    "hint": "Please upload a government service document containing: service name, description, application process, eligibility criteria, and required documents."
-                }
+                    "hint": "Please upload a government service document.",
+                },
             )
-        
-        print(f"✅ {validation_message}")
-        
-        # STEP 4: Generate slides with AI
+
+        logger.info(f"✅ {validation_message}")
+
+        # ================================================================
+        # STEP 3: Generate AI-enhanced slides (QUICK)
+        # ================================================================
         logger.info("🤖 Generating slides with AI...")
         if use_openai:
             from services.openai_service import (
@@ -1755,61 +731,55 @@ async def generate_video_from_pdf(pdf_file: UploadFile = File(...),service_name:
         slides = slide_data.get("slides", [])
         logger.info(f"✅ Generated {len(slides)} slides")
 
-        # STEP 5: Generate video IN-MEMORY
-        logger.info("🎬 Generating video...")
-        result = await generate_video_from_slides(slides, official_service_name)
-        video_bytes = result["video_bytes"]
-
-        # STEP 6: Calculate next version
-        next_version = get_next_version(matched_service_id, official_service_name, db)
-
-        # STEP 7: Save video to filesystem
-        video_info = save_video_to_filesystem(
-            video_bytes, official_service_name, next_version
-        )
-
-        # STEP 8: Log generation metadata WITH FILE PATH
-        video_record = models.ServiceVideo(
+        # ================================================================
+        # STEP 4: Create video generation request
+        # ================================================================
+        logger.info("📝 Creating video generation request...")
+        video_id = queue_manager.create_video_request(
+            db=db,
             service_id=matched_service_id,
-            service_name_metadata=official_service_name,
-            video_version=next_version,
-            source_type="pdf_automatic",
-            video_path=video_info["video_path"],  # ✅ Store file path
-            video_url=f"/api/videos/{video_info['relative_path']}",  # ✅ Store URL path
-            file_size_mb=result["file_size_mb"],
-            duration_seconds=result["duration_estimate"],
-            total_slides=result["total_slides"],
-            is_new=True,
-            is_done=True,
-            created_at=datetime.now(),
+            service_name=official_service_name,
+            source_type="pdf_ai_enhanced",
+            request_data={"filename": pdf_file.filename},
         )
 
-        db.add(video_record)
-        db.commit()
-        db.refresh(video_record)
+        logger.info(f"✅ Video request created: {video_id}")
 
-        # STEP 9: Mark previous versions as old
-        db.query(models.ServiceVideo).filter(
-            models.ServiceVideo.service_id == matched_service_id,
-            models.ServiceVideo.video_version != next_version,
-        ).update({"is_new": False}, synchronize_session=False)
-        db.commit()
-
-        logger.info(
-            f"✅ Video generated and saved! Log ID: {video_record.video_id}, Path: {video_info['video_path']}"
+        # ================================================================
+        # STEP 5: Start background video generation
+        # ================================================================
+        logger.info("🎬 Starting background video generation...")
+        background_tasks.add_task(
+            background_video_generation,
+            video_id=video_id,
+            slides=slides,
+            service_name=official_service_name,
+            service_id=matched_service_id,
+            db=db,
         )
+
+        # ================================================================
+        # STEP 6: Return immediately
+        # ================================================================
+        logger.info("=" * 80)
+        logger.info("✅ REQUEST ACCEPTED - VIDEO GENERATION IN PROGRESS")
+        logger.info("=" * 80)
+
         return {
             "success": True,
-            "message": "Video generated successfully with AI enhancement",
+            "message": "Video generation started in background",
+            "video_id": video_id,
             "service_id": matched_service_id,
             "service_name": official_service_name,
-            "video_version": next_version,
-            "video_url": f"/api/videos/{official_service_name.replace(' ', '_')}/{next_version}",
-            "video_id": video_record.video_id,
-            "total_slides": result["total_slides"],
-            "file_size_mb": result["file_size_mb"],
-            "duration_seconds": result["duration_estimate"],
-            "ai_enhanced": True,  # Flag to indicate AI was used
+            "status": "pending",
+            "total_slides": len(slides),
+            "estimated_time_minutes": len(slides) * 2,
+            "next_steps": {
+                "check_status": f"GET /bsk_portal/video_status/{video_id}",
+                "get_completed": "GET /bsk_portal/get_completed_videos/",
+                "poll_interval": "Check every 2-3 minutes",
+            },
+            "note": "Video generation takes ~20 minutes. Use the endpoints above to check progress and retrieve your video.",
         }
 
     except HTTPException:
@@ -1818,7 +788,306 @@ async def generate_video_from_pdf(pdf_file: UploadFile = File(...),service_name:
         logger.error(f"❌ Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ENDPOINT 3: GET VIDEO BY CLEAN URL
+
+# ============================================================================
+# 3. GET ALL Completed QUEUE
+# ============================================================================
+@app.get("/bsk_portal/get_completed_videos/", tags=["Training video Generation"])
+def get_completed_videos(
+    db: Session = Depends(get_db),
+):
+    """
+    📹 **RETRIEVE ALL COMPLETED VIDEOS**
+
+    **This is the main endpoint to check for finished videos.**
+
+    Returns:
+    - All videos that have completed generation
+    - Videos are marked as "retrieved" after this call
+    - Won't appear again in future calls (already downloaded)
+
+    **Usage:**
+    Poll this endpoint every 2-3 minutes to check for completed videos.
+
+    **Response Format:**
+    ```json
+    {
+        "success": true,
+        "completed_videos": [
+            {
+                "video_id": "abc-123-def",
+                "service_name": "Birth Certificate",
+                "video_url": "/api/videos/Birth_Certificate/1",
+                "file_size_mb": 45.2,
+                "duration_seconds": 180,
+                "total_slides": 8,
+                "completed_at": "2024-02-10T14:30:00",
+                "processing_time_seconds": 1200
+            }
+        ],
+        "total_count": 1
+    }
+    ```
+
+    **Important:**
+    - Videos are removed from the queue after retrieval
+    - Download/save videos immediately after retrieval
+    - Videos older than 7 days may be auto-cleaned
+    """
+
+    try:
+        logger.info("📋 Retrieving completed videos...")
+
+        # ✅ Fetch completed but not yet retrieved videos
+        completed_videos = (
+            db.query(models.VideoGenerationQueue)
+            .filter(
+                models.VideoGenerationQueue.status == "completed",
+                # models.VideoGenerationQueue.is_retrieved == False
+            )
+            .order_by(desc(models.VideoGenerationQueue.completed_at))
+            .all()
+        )
+        # print(completed_videos)
+        # Convert to response format
+        response_data = []
+        for video in completed_videos:
+            response_data.append(
+                {
+                    "video_id": video.video_id,
+                    "service_name": video.service_name,
+                    "video_url": video.video_url,
+                    "file_size_mb": video.file_size_mb,
+                    "duration_seconds": video.duration_seconds,
+                    "total_slides": video.total_slides,
+                    "completed_at": video.completed_at,
+                    # "processing_time_seconds": video.processing_time_seconds,
+                }
+            )
+
+            # ✅ Mark as retrieved
+            # video.is_retrieved = True
+
+        # Commit changes
+        # db.commit()
+
+        logger.info(f"✅ Found {len(response_data)} completed videos")
+
+        return {
+            "success": True,
+            "completed_videos": response_data,
+            "total_count": len(response_data),
+            "message": (
+                (f"{len(response_data)} completed video(s) currently is queue. ")
+                if response_data
+                else "No completed videos available at this time."
+            ),
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error retrieving completed videos: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve completed videos: {str(e)}"
+        )
+
+
+# ============================================================================
+# 4. CHECK SPECIFIC VIDEO STATUS
+# ============================================================================
+@app.get("/bsk_portal/video_status/{video_id}", tags=["Training video Generation"])
+def check_video_status(
+    video_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    🔍 **CHECK STATUS OF SPECIFIC VIDEO**
+
+    Track the progress of a specific video generation request.
+
+    **Possible Statuses:**
+    - `pending`: Waiting to start
+    - `processing`: Currently generating (~20 mins)
+    - `completed`: Ready for download
+    - `retrieved`: Already downloaded by user
+    - `failed`: Generation failed (see error_message)
+
+    **Response when completed:**
+    ```json
+    {
+        "video_id": "abc-123",
+        "status": "completed",
+        "service_name": "Birth Certificate",
+        "video_url": "/api/videos/Birth_Certificate/1",
+        "file_size_mb": 45.2,
+        "created_at": "2024-02-10T14:00:00",
+        "completed_at": "2024-02-10T14:20:00"
+    }
+    ```
+
+    **Usage:**
+    ```bash
+    GET /bsk_portal/video_status/abc-123-def-456
+    ```
+    """
+
+    try:
+        logger.info(f"🔍 Checking status for video: {video_id}")
+
+        # Get status from queue
+        status_info = queue_manager.get_request_status(db, video_id)
+
+        if not status_info:
+            raise HTTPException(
+                status_code=404, detail=f"Video request not found: {video_id}"
+            )
+
+        logger.info(f"📊 Status: {status_info['status']}")
+
+        return {
+            "success": True,
+            **status_info,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error checking video status: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to check video status: {str(e)}"
+        )
+
+
+# ============================================================================
+# 5. GET PENDING QUEUE (ADMIN/DEBUG)
+# ============================================================================
+@app.get("/bsk_portal/pending_videos/", tags=["Training video Generation"])
+def get_pending_videos(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """
+    📊 **VIEW PENDING/PROCESSING VIDEOS** (Admin/Debug)
+
+    See all videos currently in the generation queue.
+
+    **Use cases:**
+    - Monitor queue length
+    - Check system load
+    - Debug stuck videos
+    - Estimate wait times
+
+    **Response:**
+    ```json
+    {
+        "pending_videos": [
+            {
+                "video_id": "abc-123",
+                "service_name": "Ration Card",
+                "status": "processing",
+                "created_at": "2024-02-10T14:00:00",
+                "started_at": "2024-02-10T14:05:00"
+            }
+        ],
+        "total_count": 1,
+        "queue_health": "normal"
+    }
+    ```
+    """
+
+    try:
+        pending = queue_manager.get_pending_requests(db, limit=limit)
+
+        # Determine queue health
+        if len(pending) == 0:
+            queue_health = "empty"
+        elif len(pending) < 5:
+            queue_health = "normal"
+        elif len(pending) < 20:
+            queue_health = "busy"
+        else:
+            queue_health = "very_busy"
+
+        return {
+            "success": True,
+            "pending_videos": pending,
+            "total_count": len(pending),
+            "queue_health": queue_health,
+            "note": "Videos typically process in ~20 minutes each.",
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Error retrieving pending videos: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve pending videos: {str(e)}"
+        )
+
+
+# ============================================================================
+# 6. Delete/Acknowledge Video (Called by BSK after successful retrieval)
+# ============================================================================
+@app.delete(
+    "/bsk_portal/acknowledge_video/{video_id}",
+    tags=["Training video Generation"],
+)
+def acknowledge_video(
+    video_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    🧹 **ACKNOWLEDGE VIDEO — QUEUE CLEANUP**
+    Called by the external BSK server **after** it has safely received and stored
+    the video result that was pushed to it.
+    **What it does:**
+    - Permanently deletes the queue record for this `video_id`
+    - Frees up space in the `VideoGenerationQueue` table
+    - Safe to call for both completed and failed videos
+
+    **When to call:**
+    After the BSK server receives the POST to `/aiapi/push_completed_videos`
+    and confirms it has stored the payload, it calls this endpoint with the
+    same `video_id` to tell the AI server it can forget about this job.
+
+    **Example:**
+    ```
+    DELETE /bsk_portal/acknowledge_video/abc-123-def
+    ```
+
+    **Response:**
+    ```json
+    {
+        "success": true,
+        "video_id": "abc-123-def",
+        "message": "Queue entry deleted successfully"
+    }
+    ```
+
+    **Idempotent behaviour:**
+    If the `video_id` is not found (already deleted), a 404 is returned.
+    """
+    logger.info(f"🧹 Acknowledge request received for video_id: {video_id}")
+
+    deleted = queue_manager.acknowledge_and_delete(db=db, video_id=video_id)
+
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"video_id '{video_id}' not found in queue. "
+            "It may have already been deleted.",
+        )
+
+    logger.info(f"✅ Queue entry deleted for: {video_id}")
+
+    return {
+        "success": True,
+        "video_id": video_id,
+        "message": "Queue entry deleted successfully. Video generation job has been cleaned up.",
+    }
+
+
+# ============================================================================
+# 7. GET VIDEO BY CLEAN URL
+# ============================================================================
 @app.get("/api/videos/{service_name}/{version}", tags=["Video Access"])
 async def get_video_by_url(
     service_name: str,
@@ -1870,68 +1139,8 @@ async def get_video_by_url(
 
 
 # ============================================================================
-# DATA SYNC ENDPOINTS
+# SYNC API Endpoints
 # ============================================================================
-scheduler = BackgroundScheduler()
-
-# ============================================================================
-# SYNC ENDPOINTS (One endpoint per table)
-# ============================================================================
-
-
-@app.get("/sync/{table_name}", tags=["Sync"])
-def sync_table(
-    table_name: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
-):
-    """
-    Sync a specific table
-    Available tables:
-    - bsk_master
-    - deo_master
-    - service_master
-    - provision
-
-    Examples:
-    GET /sync/bsk_master
-    GET /sync/provision
-    """
-
-    valid_tables = ["bsk_master", "deo_master", "service_master", "provision"]
-
-    if table_name not in valid_tables:
-        raise HTTPException(400, f"Invalid table. Choose: {', '.join(valid_tables)}")
-
-    logger.info(f"Manual sync triggered for {table_name}")
-
-    service = SyncService(db)
-    background_tasks.add_task(service.sync_table, table_name)
-
-    return {
-        "success": True,
-        "message": f"Sync started for {table_name}",
-        "table": table_name,
-    }
-
-
-@app.post("/sync/all", tags=["Sync"])
-def sync_all(background_tasks: BackgroundTasks):
-    """
-    Manually trigger sync for all 4 tables
-
-    This does the same thing as the auto-scheduler,
-    but you can trigger it manually anytime.
-
-    POST /sync/all
-    """
-    logger.info("🚀 Manual sync triggered for all tables")
-
-    background_tasks.add_task(sync_all_tables)
-
-    return {
-        "success": True,
-        "message": "Syncing all tables in background",
-        "tables": ["bsk_master", "deo_master", "service_master", "provision"],
-    }
 
 
 @app.get("/sync/status", tags=["Sync"])
@@ -1943,13 +1152,12 @@ def get_status(table_name: str = None, limit: int = 10, db: Session = Depends(ge
     GET /sync/status?table_name=provision
     GET /sync/status?limit=50
     """
-    from app.models import models
-    from sqlalchemy import desc
-
-    query = db.query(models.SyncLog).order_by(desc(models.SyncLog.started_at))
+    query = db.query(models.SyncCheckpoint).order_by(
+        desc(models.SyncCheckpoint.last_sync_date)
+    )
 
     if table_name:
-        query = query.filter(models.SyncLog.table_name == table_name)
+        query = query.filter(models.SyncCheckpoint.table_name == table_name)
 
     logs = query.limit(limit).all()
 
@@ -1957,15 +1165,13 @@ def get_status(table_name: str = None, limit: int = 10, db: Session = Depends(ge
         "logs": [
             {
                 "table": log.table_name,
-                "type": log.sync_type,
-                "status": log.status,
-                "started": log.started_at.isoformat(),
-                "completed": log.completed_at.isoformat() if log.completed_at else None,
-                "duration": log.duration_seconds,
-                "fetched": log.records_fetched,
-                "inserted": log.records_inserted,
-                "updated": log.records_updated,
-                "failed": log.records_failed,
+                # "type": log.sync_type,
+                "status": log.sync_status,
+                "started": log.last_sync_date.isoformat(),
+                "duration": log.last_sync_duration_seconds,
+                "fetched": log.total_records_synced,
+                "inserted": log.total_sync_runs,
+                "failed": log.total_failures,
                 "error": log.error_message,
             }
             for log in logs
@@ -1973,298 +1179,278 @@ def get_status(table_name: str = None, limit: int = 10, db: Session = Depends(ge
     }
 
 
-@app.get("/sync/checkpoints", tags=["Sync"])
-def get_checkpoints(db: Session = Depends(get_db)):
-    """
-    View checkpoints for all tables
-
-    GET /sync/checkpoints
-    """
-    from app.models import models
-
-    checkpoints = db.query(models.SyncCheckpoint).all()
-
-    return {
-        "checkpoints": [
-            {
-                "table": cp.table_name,
-                "last_sync": (
-                    cp.last_sync_date.isoformat() if cp.last_sync_date else None
-                ),
-                "last_timestamp": (
-                    cp.last_sync_timestamp.isoformat()
-                    if cp.last_sync_timestamp
-                    else None
-                ),
-                "total_synced": cp.total_records_synced,
-            }
-            for cp in checkpoints
-        ]
-    }
-
-
-# ============================================================================
-# Our system Required APIs
-# ============================================================================
-
-
-# BSK MASTER
-@app.get("/bsk/", response_model=List[schemas.BSKMaster], tags=["BSK Master"])
-def get_bsk_list(
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(None, ge=1, description="Maximum number of records to return"),
-    db: Session = Depends(get_db),
-):
-    """
-    Retrieve a paginated list of Bangla Sahayata Kendra (BSK) records.
-    This endpoint supports pagination through skip and limit parameters,
-    allowing efficient retrieval of large datasets.
-    Args:
-        skip: Number of records to skip (for pagination)
-        limit: Maximum number of records to return (None = all records)
-        db: Database session dependency
-    Returns:
-        List[BSKMaster]: List of BSK master records
-    """
-    logger.info(f"GET /bsk/ - Fetching BSK list with skip={skip}, limit={limit}")
-
-    # Build query with offset
-    query = db.query(models.BSKMaster).offset(skip)
-
-    # Apply limit if specified
-    if limit is not None:
-        query = query.limit(limit)
-
-    bsk_list = query.all()
-    logger.info(f"Successfully retrieved {len(bsk_list)} BSK records")
-
-    return bsk_list
-
-
-# BSK idividual
-@app.get("/bsk/{bsk_code}", response_model=schemas.BSKMaster, tags=["BSK Master"])
-def get_bsk(bsk_id: int, db: Session = Depends(get_db)):
-    """
-    Retrieve a specific BSK record by its ID.
-    Args:
-        bsk_id: The unique identifier for the BSK
-        db: Database session dependency
-    Returns:
-        BSKMaster: The requested BSK record
-    Raises:
-        HTTPException: 404 if BSK not found
-    """
-    logger.info(f"GET /bsk/{bsk_id} - Fetching BSK with ID: {bsk_id}")
-
-    bsk = db.query(models.BSKMaster).filter(models.BSKMaster.bsk_id == bsk_id).first()
-
-    if bsk is None:
-        logger.warning(f"BSK not found with ID: {bsk_id}")
-        raise HTTPException(status_code=404, detail=f"BSK not found with ID: {bsk_id}")
-
-    logger.info(f"Successfully retrieved BSK: {bsk_id}")
-    return bsk
-
-
-# SERVICE MASTER
-@app.get(
-    "/services/", response_model=List[schemas.ServiceMaster], tags=["Service Master"]
-)
-def get_services(
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(None, ge=1, description="Maximum number of records to return"),
-    db: Session = Depends(get_db),
-):
-    """
-    Retrieve a paginated list of service records.
-    Services represent the different banking services that can be provided
-    by BSK agents (e.g., account opening, loan applications, etc.).
-    Args:
-        skip: Number of records to skip (for pagination)
-        limit: Maximum number of records to return (None = all records)
-        db: Database session dependency
-    Returns:
-        List[ServiceMaster]: List of service master records
-    """
-    logger.info(f"GET /services/ - Fetching services with skip={skip}, limit={limit}")
-
-    # Build query with offset
-    query = db.query(models.ServiceMaster).offset(skip)
-
-    # Apply limit if specified
-    if limit is not None:
-        query = query.limit(limit)
-
-    services = query.all()
-    logger.info(f"Successfully retrieved {len(services)} service records")
-
-    return services
-
-
-# SERVICE individual
-@app.get(
-    "/services/{service_id}",
-    response_model=schemas.ServiceMaster,
-    tags=["Service Master"],
-)
-def get_service(service_id: int, db: Session = Depends(get_db)):
-    """
-    Retrieve a specific service record by its ID.
-    Args:
-        service_id: The unique identifier for the service
-        db: Database session dependency
-    Returns:
-        ServiceMaster: The requested service record
-    Raises:
-        HTTPException: 404 if service not found
-    """
-    logger.info(f"GET /services/{service_id} - Fetching service with ID: {service_id}")
-
-    service = (
-        db.query(models.ServiceMaster)
-        .filter(models.ServiceMaster.service_id == service_id)
-        .first()
-    )
-
-    if service is None:
-        logger.warning(f"Service not found with ID: {service_id}")
-        raise HTTPException(
-            status_code=404, detail=f"Service not found with ID: {service_id}"
-        )
-
-    logger.info(f"Successfully retrieved service: {service_id}")
-    return service
-
-
-# DEO MASTER
-@app.get("/deo/", response_model=List[schemas.DEOMaster], tags=["DEO Master"])
-def get_deo_list(
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(None, ge=1, description="Maximum number of records to return"),
-    db: Session = Depends(get_db),
-):
-    """
-    Retrieve a paginated list of Data Entry Operator (DEO) records.
-    DEOs are responsible for managing and overseeing BSK agents in their
-    assigned territories.
-    Args:
-        skip: Number of records to skip (for pagination)
-        limit: Maximum number of records to return (None = all records)
-        db: Database session dependency
-    Returns:
-        List[DEOMaster]: List of DEO master records
-    """
-    logger.info(f"GET /deo/ - Fetching DEO list with skip={skip}, limit={limit}")
-
-    # Build query with offset
-    query = db.query(models.DEOMaster).offset(skip)
-
-    # Apply limit if specified
-    if limit is not None:
-        query = query.limit(limit)
-
-    deo_list = query.all()
-    logger.info(f"Successfully retrieved {len(deo_list)} DEO records")
-
-    return deo_list
-
-
-# DEO individual
-@app.get("/deo/{agent_id}", response_model=schemas.DEOMaster, tags=["DEO Master"])
-def get_deo(agent_id: int, db: Session = Depends(get_db)):
-    """
-    Retrieve a specific DEO record by agent ID.
-    Args:
-        agent_id: The unique identifier for the DEO agent
-        db: Database session dependency
-    Returns:
-        DEOMaster: The requested DEO record
-    Raises:
-        HTTPException: 404 if DEO not found
-    """
-    logger.info(f"GET /deo/{agent_id} - Fetching DEO with agent ID: {agent_id}")
-
-    deo = (
-        db.query(models.DEOMaster).filter(models.DEOMaster.agent_id == agent_id).first()
-    )
-
-    if deo is None:
-        logger.warning(f"DEO not found with agent ID: {agent_id}")
-        raise HTTPException(
-            status_code=404, detail=f"DEO not found with agent ID: {agent_id}"
-        )
-
-    logger.info(f"Successfully retrieved DEO: {agent_id}")
-    return deo
-
-
-# PROVISION ENDPOINTS
-@app.get("/provisions/", response_model=List[schemas.Provision], tags=["Provisions"])
-def get_provisions(
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(
+@app.get("/sync", tags=["Sync"])
+def sync_table(
+    background_tasks: BackgroundTasks,
+    table: str = Query(
+        ...,
+        description="Table name: bsk_master, deo_master, service_master, provision, or 'all'",
+        example="provision",
+    ),
+    start_date: Optional[str] = Query(
         None,
-        ge=1,
-        description="Maximum number of records to return(Choose a small number as the number of data is too huge)",
+        description="[PROVISION ONLY] Custom start date (YYYY-MM-DD). If not provided, uses checkpoint.",
+        regex=r"^\d{4}-\d{2}-\d{2}$",
+        example="2023-01-01",
+    ),
+    end_date: Optional[str] = Query(
+        None,
+        description="[PROVISION ONLY] Custom end date (YYYY-MM-DD). If not provided, uses today.",
+        regex=r"^\d{4}-\d{2}-\d{2}$",
+        example="2023-12-31",
     ),
     db: Session = Depends(get_db),
 ):
     """
-    Retrieve a paginated list of provision records.
-    Provisions represent service transactions or activations performed by
-    BSK agents for customers.
-    Args:
-        skip: Number of records to skip (for pagination)
-        limit: Maximum number of records to return (None = all records)
-        db: Database session dependency
-    Returns:
-        List[Provision]: List of provision records
+    🎯 UNIFIED SYNC ENDPOINT - Sync any table or all tables with one API call
+
+    **Supported Tables:**
+    - `bsk_master` - Drop & reload strategy
+    - `deo_master` - Drop & reload strategy
+    - `service_master` - Drop & reload strategy
+    - `provision` - Incremental sync with optional custom date range
+    - `all` - Sync all tables in sequence
+
+    **Usage Examples:**
+
+    1️⃣ **Sync BSK Master** (drop & reload):
+    ```bash
+    GET /sync?table=bsk_master
+    ```
+
+    2️⃣ **Sync Provision** (normal incremental - uses checkpoint):
+    ```bash
+    GET /sync?table=provision
+    ```
+
+    3️⃣ **Sync Provision with custom date range** (first-time backfill):
+    ```bash
+    GET /sync?table=provision&start_date=2023-01-01&end_date=2023-12-31
+    ```
+
+    4️⃣ **Sync ALL tables**:
+    ```bash
+    GET /sync?table=all
+    ```
+
+    5️⃣ **Sync ALL tables with custom provision dates**:
+    ```bash
+    GET /sync?table=all&start_date=2023-01-01&end_date=2023-12-31
+    ```
+
+    **For Your Scheduler:**
+    ```python
+    # Daily sync - just call this
+    requests.get("http://api/sync?table=all")
+
+    # Or sync specific tables
+    requests.get("http://api/sync?table=bsk_master")
+    requests.get("http://api/sync?table=provision")
+    ```
+
+    **Validation:**
+    - Table name must be one of: bsk_master, deo_master, service_master, provision, all
+    - Dates only work with provision or all tables
+    - Dates must be in YYYY-MM-DD format
+    - start_date must be before end_date
     """
-    logger.info(
-        f"GET /provisions/ - Fetching provisions with skip={skip}, limit={limit}"
-    )
+    try:
+        # Validate table name
+        valid_tables = [
+            "bsk_master",
+            "deo_master",
+            "service_master",
+            "provision",
+            "all",
+        ]
+        if table not in valid_tables:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid table name. Must be one of: {', '.join(valid_tables)}",
+            )
 
-    # Build query with offset
-    query = db.query(models.Provision).offset(skip)
+        # Validate date range if both provided
+        if start_date and end_date:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
 
-    # Apply limit if specified
-    if limit is not None:
-        query = query.limit(limit)
+            if start > end:
+                raise HTTPException(
+                    status_code=400, detail="start_date must be before end_date"
+                )
 
-    provisions = query.all()
-    logger.info(f"Successfully retrieved {len(provisions)} provision records")
+        # Warn if dates provided for non-provision tables
+        if (start_date or end_date) and table not in ["provision", "all"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Date parameters only work with 'provision' or 'all' tables, not '{table}'",
+            )
 
-    return provisions
+        service = SyncService(db)
+
+        # Handle "all tables" request
+        if table == "all":
+            # Sync master tables first (drop & reload)
+            background_tasks.add_task(service.sync_master_table, "bsk_master")
+            background_tasks.add_task(service.sync_master_table, "deo_master")
+            background_tasks.add_task(service.sync_master_table, "service_master")
+
+            # Then sync provision (incremental)
+            background_tasks.add_task(service.sync_provisions, start_date, end_date)
+
+            return {
+                "status": "started",
+                "message": "All table syncs started in background",
+                "tables": {
+                    "bsk_master": "full_drop_reload",
+                    "deo_master": "full_drop_reload",
+                    "service_master": "full_drop_reload",
+                    "provision": "incremental",
+                },
+                "provision_dates": {
+                    "start_date": start_date or "from checkpoint",
+                    "end_date": end_date or "today",
+                },
+                "check_status": f"GET /sync/status",
+            }
+
+        # Handle individual table sync
+        if table == "provision":
+            background_tasks.add_task(service.sync_provisions, start_date, end_date)
+            sync_type = "incremental"
+            strategy = f"Incremental sync from {start_date or 'checkpoint'} to {end_date or 'today'}"
+
+        elif table in ["bsk_master", "deo_master", "service_master"]:
+            background_tasks.add_task(service.sync_master_table, table)
+            sync_type = "full_drop_reload"
+            strategy = "Drop & reload (TRUNCATE + INSERT)"
+
+        return {
+            "status": "started",
+            "message": f"{table} sync started in background",
+            "table": table,
+            "sync_type": sync_type,
+            "strategy": strategy,
+            "dates": {
+                "start_date": start_date
+                or ("from checkpoint" if table == "provision" else "N/A"),
+                "end_date": end_date or ("today" if table == "provision" else "N/A"),
+            },
+            "check_status": f"GET /sync/status?table={table}",
+        }
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {ve}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start sync: {str(e)}")
 
 
-# PROVISION individual
-@app.get(
-    "/provisions/{customer_id}", response_model=schemas.Provision, tags=["Provisions"]
-)
-def get_provision(customer_id: str, db: Session = Depends(get_db)):
+# ============================================================================
+# For Precomputation AutoSchedular
+# ============================================================================
+@app.post("/precompute/training-recommendations", tags=["Training Analytics"])
+def trigger_training_precompute(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """
-    Retrieve a specific provision record by customer ID.
-    Args:
-        customer_id: The unique identifier for the customer
-        db: Database session dependency
-    Returns:
-        Provision: The requested provision record
-    Raises:
-        HTTPException: 404 if provision not found
+    Manually trigger training recommendations precomputation.
+    
+    **🔄 This endpoint COMPUTES and CACHES data (takes 10-30 seconds)**
+    - Runs the heavy analytics computation
+    - Analyzes last 365 days of provisions (~1.6M records)
+    - Caches results for fast retrieval via GET endpoint
+    
+    **🚀 AUTOMATIC OPTIMIZATION:**
+    - Uses 365-day sliding window (fixed, no configuration needed)
+    - Keeps computation time constant (10-30s) regardless of database age
+
+    **What it does:**
+    1. Analyzes provision data from the last 365 days
+    2. Identifies underperforming BSKs compared to nearby centers
+    3. Generates personalized training recommendations
+    4. Caches results in TrainingRecommendationCache table
+    5. Takes 10-30 seconds to complete (runs in background)
+
+    **When to use:**
+    - After major data imports or updates
+    - When you need fresh recommendations immediately
+    - Before important reporting periods
+    - For testing the precompute system
+    
+    **You DON'T need this if:**
+    - Just viewing recommendations (use GET endpoint)
+    - It's already Sunday (automatic update at 3:00 AM)
+    - Cache is fresh (< 1 week old)
+
+    **After running this:**
+    - Data is cached and available instantly via GET /service_training_recommendation/
+    - Cache stays fresh for ~1 week
+    - Next automatic update: Sunday at 3:00 AM
+
+    **Example Usage:**
+    ```bash
+    # Trigger precompute (runs in background)
+    curl -X POST http://localhost:8000/precompute/training-recommendations
+
+    # Check if it's completed
+    curl http://localhost:8000/precompute/status
+
+    # Get the fresh results (fast, from cache)
+    curl http://localhost:8000/service_training_recommendation/
+    ```
     """
-    logger.info(
-        f"GET /provisions/{customer_id} - Fetching provision for customer: {customer_id}"
-    )
-    provision = (
-        db.query(models.Provision)
-        .filter(models.Provision.customer_id == customer_id)
+    logger.info("🚀 Manual training precompute triggered (365-day sliding window)")
+
+    # Check if cache is fresh (optional - prevent unnecessary recomputes)
+    from datetime import datetime, timezone, timedelta
+    
+    latest_cache = db.query(models.TrainingRecommendationCache)\
+        .order_by(desc(models.TrainingRecommendationCache.timestamp))\
         .first()
-    )
-    if provision is None:
-        logger.warning(f"Provision not found for the customer ID: {customer_id}")
-        raise HTTPException(
-            status_code=404,
-            detail=f"Provision not found for the customer ID: {customer_id}",
+    
+    if latest_cache and latest_cache.timestamp:
+        age = datetime.now(timezone.utc) - latest_cache.timestamp.replace(tzinfo=timezone.utc)
+        if age < timedelta(hours=1):
+            return {
+                "success": False,
+                "message": "Cache was updated less than 1 hour ago. Please wait before triggering again.",
+                "cache_age_minutes": int(age.total_seconds() / 60),
+                "recommendation": "Use GET /service_training_recommendation/ to fetch current data",
+            }
+
+    # Define background task with FIXED 365-day window
+    def run_precompute():
+        compute_and_cache_recommendations(
+            db=db,
+            n_neighbors=10,
+            top_n_services=10,
+            min_provision_threshold=5,
+            lookback_days=365,  # ✅ FIXED: Always 365 days
         )
-    logger.info(f"Successfully retrieved provision for the customer: {customer_id}")
-    return provision
+
+    # Run in background to avoid timeout
+    background_tasks.add_task(run_precompute)
+
+    return {
+        "success": True,
+        "message": "Training recommendations precompute started in background",
+        "status": "running",
+        "optimization": {
+            "sliding_window": "365 days (automatic)",
+            "estimated_provisions": "~1.6M (constant)",
+            "estimated_time": "10-30 seconds",
+            "note": "Processing only last 365 days instead of ALL historical data",
+        },
+        "schedule": {
+            "automatic_weekly": "Every Sunday at 3:00 AM",
+            "manual_trigger": "POST /precompute/training-recommendations (this endpoint)",
+        },
+        "next_steps": [
+            "Wait 10-30 seconds for completion",
+            "Check status: GET /precompute/status",
+            "Get results: GET /service_training_recommendation/",
+        ],
+    }

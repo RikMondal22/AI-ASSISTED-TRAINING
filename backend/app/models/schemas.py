@@ -54,14 +54,6 @@ class ServiceMaster(BaseModel):
         from_attributes = True
 
 
-class DepartmentMaster(BaseModel):
-    department_id: int
-    department_name: str
-
-    class Config:
-        from_attributes = True
-
-
 class DEOMaster(BaseModel):
     agent_id: int
     user_id: Optional[int]
@@ -87,38 +79,6 @@ class DEOMaster(BaseModel):
         from_attributes = True
 
 
-class CitizenMaster(BaseModel):
-    citizen_id: int
-    citizen_phone_no: str
-    citizen_name: str
-    alternative_phone_no: Optional[str] = None
-    email: Optional[str] = None
-    father_guardian_name: str
-    district: str
-    block_municipality: str
-    post_office: str
-    police_station: str
-    house_no: str
-    gender: str
-    date_of_birth: datetime
-    age: int
-    caste: str
-    religion: str
-
-    class Config:
-        from_attributes = True
-
-
-class DistrictMaster(BaseModel):
-    district_id: int
-    district_name: str
-    slave_db: str
-    district_code: str
-
-    class Config:
-        from_attributes = True
-
-
 class Provision(BaseModel):
     bsk_id: Optional[int]
     bsk_name: Optional[str]
@@ -129,86 +89,6 @@ class Provision(BaseModel):
     service_name: Optional[str]
     prov_date: Optional[str]
     docket_no: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-class BSKTransaction(BaseModel):
-    transaction_id: int
-    transaction_date: datetime
-    bsk_code: str
-    transaction_amount: float
-    transaction_time: datetime
-    deo_code: str
-    deo_name: str
-    customer_id: int
-    customer_name: str
-    customer_phone: str
-    service_id: int
-    service_name: str
-
-    class Config:
-        from_attributes = True
-
-
-class BlockMunicipality(BaseModel):
-    block_muni_id: int
-    block_muni_name: Optional[str]
-    sub_div_id: Optional[int]
-    district_id: Optional[int]
-    bm_type: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-class CitizenMasterV2(BaseModel):
-    citizen_id: str
-    citizen_phone: Optional[str]
-    citizen_name: Optional[str]
-    alt_phone: Optional[str]
-    email: Optional[str]
-    guardian_name: Optional[str]
-    district_id: Optional[int]
-    sub_div_id: Optional[int]
-    gp_id: Optional[int]
-    gender: Optional[str]
-    dob: Optional[str]
-    age: Optional[int]
-    caste: Optional[str]
-    religion: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-class District(BaseModel):
-    district_id: int
-    district_name: Optional[str]
-    district_code: Optional[str]
-    grp: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-class GPWardMaster(BaseModel):
-    gp_id: int
-    district_id: Optional[str]
-    sub_div_id: Optional[int]
-    block_muni_id: Optional[str]
-    gp_ward_name: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-class PostOfficeMaster(BaseModel):
-    post_office_id: int
-    post_office_name: Optional[str]
-    pin_code: Optional[str]
-    district_id: Optional[int]
 
     class Config:
         from_attributes = True
@@ -338,11 +218,6 @@ class ServiceVideo(ServiceVideoBase):
         from_attributes = True
 
 
-# ============================================================================
-# UPDATED: VideoGenerationResponse
-# ============================================================================
-
-
 class VideoGenerationResponse(BaseModel):
     """Response schema for video generation endpoints"""
 
@@ -366,11 +241,6 @@ class VideoGenerationResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-# ============================================================================
-# NEW: Form Generation Request Schema
-# ============================================================================
 
 
 class FormVideoGenerationRequest(BaseModel):
@@ -421,11 +291,6 @@ class FormVideoGenerationRequest(BaseModel):
         }
 
 
-# ============================================================================
-# NEW: PDF Generation Request Schema
-# ============================================================================
-
-
 class PDFVideoGenerationRequest(BaseModel):
     """Request schema for PDF-based video generation"""
 
@@ -433,11 +298,6 @@ class PDFVideoGenerationRequest(BaseModel):
         ..., description="Service name (must match service_master)"
     )
     use_openai: bool = Field(False, description="Use OpenAI instead of Gemini")
-
-
-# ============================================================================
-# NEW: Video List Response Schema
-# ============================================================================
 
 
 class VideoListItem(BaseModel):
@@ -467,11 +327,6 @@ class VideoListResponse(BaseModel):
     total: int
     videos: List[VideoListItem]
     filters_applied: Optional[Dict[str, Any]] = None
-
-
-# ============================================================================
-# NEW: Video Details Response Schema
-# ============================================================================
 
 
 class VideoDetailsResponse(BaseModel):
@@ -519,11 +374,6 @@ class VideoDetailsResponse(BaseModel):
         from_attributes = True
 
 
-# ============================================================================
-# NEW: Slide Generation Response (for testing/debugging)
-# ============================================================================
-
-
 class SlideContent(BaseModel):
     """Schema for a single slide"""
 
@@ -541,3 +391,176 @@ class SlideGenerationResponse(BaseModel):
     slides: List[SlideContent]
     ai_model_used: str
     processing_time_seconds: Optional[float] = None
+
+
+class SourceTypeBreakdown(BaseModel):
+    """Breakdown of videos by source type"""
+    source_type: str
+    count: int
+    percentage: float
+
+
+class ServiceVideoSummary(BaseModel):
+    """Summary statistics for a specific service"""
+    service_id: Optional[int]
+    service_name: str
+    total_versions: int
+    latest_version: int
+    is_active: bool
+    is_completed: bool
+    created_at: datetime
+    source_type: str
+
+
+class VideoAnalyticsResponse(BaseModel):
+    """Comprehensive analytics response for service videos"""
+    
+    # Overall Statistics
+    total_videos: int
+    total_services_with_videos: int
+    total_unique_services: int  # Services that have videos
+    
+    # Status Breakdown
+    videos_completed: int  # is_done = True
+    videos_in_progress: int  # is_done = False
+    videos_active: int  # is_active = True
+    videos_inactive: int  # is_active = False
+    
+    # Version Statistics
+    total_versions: int  # Sum of all versions
+    services_with_multiple_versions: int
+    average_versions_per_service: float
+    
+    # Source Type Breakdown
+    source_type_breakdown: List[SourceTypeBreakdown]
+    
+    # AI Enhancement Statistics
+    ai_enhanced_videos: int
+    ai_models_used: Dict[str, int]  # {"gemini-2.0-flash-exp": 10, "gpt-4": 5}
+    
+    # Storage Statistics
+    total_storage_mb: float
+    average_file_size_mb: float
+    total_duration_hours: float
+    average_duration_minutes: float
+    
+    # Access Statistics
+    total_views: int
+    most_viewed_service: Optional[str]
+    most_viewed_count: int
+    
+    # Recent Activity
+    videos_created_last_7_days: int
+    videos_created_last_30_days: int
+    latest_video_created_at: Optional[datetime]
+    
+    # Service List (optional, can be paginated)
+    services: Optional[List[ServiceVideoSummary]] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class ServiceWithVideoStatus(BaseModel):
+    """Individual service with its video generation status"""
+    service_id: int
+    service_name: str
+    department_name: Optional[str]
+    is_active: bool
+    
+    # Video status
+    has_video: bool
+    video_count: int  # Number of versions
+    latest_video_version: Optional[int]
+    video_is_completed: Optional[bool]  # is_done status of latest video
+    video_is_active: Optional[bool]  # is_active status of latest video
+    video_url: Optional[str]  # URL of latest video
+    video_created_at: Optional[datetime]
+    source_type: Optional[str]  # How video was generated
+
+
+class DepartmentVideoStats(BaseModel):
+    """Video statistics by department"""
+    department_id: Optional[int]
+    department_name: str
+    total_services: int
+    services_with_videos: int
+    services_without_videos: int
+    coverage_percentage: float
+    completed_videos: int
+    active_videos: int
+
+
+class VideoAnalyticsResponse(BaseModel):
+    """Comprehensive analytics comparing all services against generated videos"""
+    
+    # ========================================================================
+    # SERVICE OVERVIEW
+    # ========================================================================
+    total_no_of_services: int  # Total services in service_master
+    active_services: int  # Services with is_active=1
+    inactive_services: int  # Services with is_active=0
+    
+    # ========================================================================
+    # VIDEO GENERATION COVERAGE
+    # ========================================================================
+    services_with_videos: int  # Services that have at least one video
+    services_without_videos: int  # Services with no videos
+    video_coverage_percentage: float  # (services_with_videos / total_services) * 100
+    
+    # ========================================================================
+    # VIDEO STATUS BREAKDOWN
+    # ========================================================================
+    total_videos_generated: int  # Total video records
+    videos_completed: int  # Videos with is_done=True
+    videos_in_progress: int  # Videos with is_done=False
+    active_videos: int  # Videos with is_active=True
+    inactive_videos: int  # Videos with is_active=False
+    
+    # ========================================================================
+    # ACTIVE SERVICE VIDEO STATUS
+    # ========================================================================
+    active_services_with_videos: int  # Active services that have videos
+    active_services_without_videos: int  # Active services without videos
+    active_service_video_coverage: float  # Coverage % for active services only
+    
+    # ========================================================================
+    # VERSION STATISTICS
+    # ========================================================================
+    services_with_multiple_versions: int
+    total_video_versions: int
+    average_versions_per_service: float
+    
+    # ========================================================================
+    # SOURCE TYPE BREAKDOWN
+    # ========================================================================
+    videos_by_source: Dict[str, int]  # {"pdf_automatic": 10, "form_ai_enhanced": 5, ...}
+    
+    # ========================================================================
+    # DEPARTMENT-WISE BREAKDOWN
+    # ========================================================================
+    department_stats: List[DepartmentVideoStats]
+    
+    # ========================================================================
+    # STORAGE & USAGE METRICS
+    # ========================================================================
+    total_storage_mb: float
+    total_video_duration_minutes: float
+    total_views: int
+    most_viewed_service: Optional[str]
+    
+    # ========================================================================
+    # RECENT ACTIVITY
+    # ========================================================================
+    videos_created_last_7_days: int
+    videos_created_last_30_days: int
+    
+    # ========================================================================
+    # DETAILED SERVICE LIST (Optional)
+    # ========================================================================
+    services: Optional[List[ServiceWithVideoStatus]] = None
+    
+    class Config:
+        from_attributes = True
+
+

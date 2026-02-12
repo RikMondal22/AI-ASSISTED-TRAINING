@@ -7,7 +7,17 @@ Each class represents a table in the database.
 Author: AI ASSISTED TRAINING TEAM
 Version: 2.0.0
 """
+"""
+SQLAlchemy ORM Models for BSK Training Optimization API
 
+This module defines all database models (tables) using SQLAlchemy ORM.
+Each class represents a table in the database.
+
+Author: AI ASSISTED TRAINING TEAM
+Version: 2.0.0
+"""
+from sqlalchemy import Column, Integer, String, DateTime, Text, Date
+from sqlalchemy.sql import func
 from sqlalchemy import (
     Column,
     Integer,
@@ -18,6 +28,7 @@ from sqlalchemy import (
     DateTime,
     JSON,
     Index,
+    PrimaryKeyConstraint
 )
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -91,11 +102,15 @@ class DEOMaster(Base):
     """
 
     __tablename__ = "ml_deo_master"
+    # __table_args__ = (
+#     PrimaryKeyConstraint('agent_id', 'agent_code', 'prov_date', 'docket_no'),
+#     {"schema": "dbo"}
+# )
     __table_args__ = {"schema": "dbo"}
 
     # Primary Key
     agent_id = Column(
-        Integer, primary_key=True, index=True, comment="Unique agent identifier"
+        Integer,  index=True, comment="Unique agent identifier"
     )
 
     # User Information
@@ -108,7 +123,7 @@ class DEOMaster(Base):
     grp = Column(Text, comment="Group/Category")
 
     # Contact Information
-    agent_email = Column(String(250), comment="Email address")
+    agent_email = Column(String(250),primary_key=True, comment="Email address")
     agent_phone = Column(String(50), comment="Phone number")
 
     # BSK Assignment
@@ -191,10 +206,13 @@ class Provision(Base):
     """
 
     __tablename__ = "ml_provision"
-    __table_args__ = {"schema": "dbo"}
+    __table_args__ = (
+    PrimaryKeyConstraint('customer_id', 'service_id', 'prov_date', 'docket_no'),
+    {"schema": "dbo"}
+)
 
     # Primary Key
-    customer_id = Column(Text, primary_key=True, comment="Unique customer identifier")
+    customer_id = Column(Text, comment="Unique customer identifier")
 
     # BSK Information
     bsk_id = Column(Integer, index=True, comment="BSK ID where service was provided")
@@ -214,123 +232,6 @@ class Provision(Base):
 
     def __repr__(self):
         return f"<Provision(customer_id='{self.customer_id}', service_id={self.service_id}, bsk_id={self.bsk_id})>"
-
-
-class CitizenMasterV2(Base):
-    """
-    Citizen Master table (Version 2)
-
-    Stores demographic and contact information for citizens.
-    """
-
-    __tablename__ = "ml_citizen_master_v2"
-    __table_args__ = {"schema": "dbo"}
-
-    # Primary Key
-    citizen_id = Column(
-        Text, primary_key=True, index=True, comment="Unique citizen identifier"
-    )
-
-    # Contact Information
-    citizen_phone = Column(String, index=True, comment="Primary phone number")
-    alt_phone = Column(String, comment="Alternative phone number")
-    email = Column(String, comment="Email address")
-
-    # Personal Information
-    citizen_name = Column(String, comment="Full name")
-    guardian_name = Column(String(200), comment="Father/Guardian name")
-    gender = Column(String(10), comment="Gender")
-    dob = Column(String(30), comment="Date of birth")
-    age = Column(Integer, comment="Age")
-
-    # Location References
-    district_id = Column(Integer, index=True, comment="District ID reference")
-    sub_div_id = Column(Integer, comment="Sub-division ID reference")
-    gp_id = Column(Integer, comment="GP/Ward ID reference")
-
-    # Demographics
-    caste = Column(String(50), comment="Caste category")
-    religion = Column(String(30), comment="Religion")
-
-    def __repr__(self):
-        return f"<CitizenMasterV2(citizen_id='{self.citizen_id}', citizen_name='{self.citizen_name}')>"
-
-
-class DepartmentMaster(Base):
-    """Department Master - Catalog of government departments"""
-
-    __tablename__ = "ml_department_master"
-    __table_args__ = {"schema": "dbo"}
-
-    dept_id = Column(Integer, primary_key=True, index=True)
-    dept_name = Column(String(600))
-
-    def __repr__(self):
-        return (
-            f"<DepartmentMaster(dept_id={self.dept_id}, dept_name='{self.dept_name}')>"
-        )
-
-
-class District(Base):
-    """District Master - List of districts"""
-
-    __tablename__ = "ml_district"
-    __table_args__ = {"schema": "dbo"}
-
-    district_id = Column(Integer, primary_key=True, index=True)
-    district_name = Column(String(50))
-    district_code = Column(String(20), unique=True)
-    grp = Column(String(10))
-
-    def __repr__(self):
-        return f"<District(district_id={self.district_id}, district_name='{self.district_name}')>"
-
-
-class BlockMunicipality(Base):
-    """Block/Municipality Master"""
-
-    __tablename__ = "ml_block_municipality"
-    __table_args__ = {"schema": "dbo"}
-
-    block_muni_id = Column(Integer, primary_key=True, index=True)
-    block_muni_name = Column(String)
-    sub_div_id = Column(Integer, index=True)
-    district_id = Column(Integer, index=True)
-    bm_type = Column(String)
-
-    def __repr__(self):
-        return f"<BlockMunicipality(block_muni_id={self.block_muni_id}, block_muni_name='{self.block_muni_name}')>"
-
-
-class GPWardMaster(Base):
-    """Gram Panchayat/Ward Master"""
-
-    __tablename__ = "ml_gp_ward_master"
-    __table_args__ = {"schema": "dbo"}
-
-    gp_id = Column(Integer, primary_key=True, index=True)
-    district_id = Column(String)
-    sub_div_id = Column(Integer)
-    block_muni_id = Column(String)
-    gp_ward_name = Column(String)
-
-    def __repr__(self):
-        return f"<GPWardMaster(gp_id={self.gp_id}, gp_ward_name='{self.gp_ward_name}')>"
-
-
-class PostOfficeMaster(Base):
-    """Post Office Master"""
-
-    __tablename__ = "ml_post_office_master"
-    __table_args__ = {"schema": "dbo"}
-
-    post_office_id = Column(Integer, primary_key=True, index=True)
-    post_office_name = Column(String(250))
-    pin_code = Column(String(7), index=True)
-    district_id = Column(Integer, index=True)
-
-    def __repr__(self):
-        return f"<PostOfficeMaster(post_office_id={self.post_office_id}, post_office_name='{self.post_office_name}')>"
 
 
 class TrainingRecommendationCache(Base):
@@ -425,6 +326,8 @@ class TrainingRecommendationCache(Base):
         return f"<TrainingRecommendationCache(bsk_id={self.bsk_id}, priority={self.priority_score}, services={self.total_training_services})>"
 
 
+
+
 class RecommendationComputationLog(Base):
     """
     Track computation runs for monitoring and debugging.
@@ -480,179 +383,127 @@ class RecommendationComputationLog(Base):
         return f"<ComputationLog(id={self.log_id}, status={self.status}, duration={self.computation_duration_seconds}s)>"
 
 
-class SyncLog(Base):
-    """Track all sync operations for audit and incremental sync"""
-
-    __tablename__ = "sync_logs"
-    __table_args__ = {"schema": "dbo"}
-
-    log_id = Column(Integer, primary_key=True, autoincrement=True)
-    table_name = Column(String(100), index=True, comment="Table being synced")
-    sync_type = Column(String(50), comment="full, incremental, or pagination")
-
-    # Sync parameters
-    start_date = Column(DateTime, comment="Date range start (for provision)")
-    end_date = Column(DateTime, comment="Date range end (for provision)")
-    page_number = Column(Integer, comment="Current page being processed")
-
-    # Results
-    records_fetched = Column(Integer, default=0)
-    records_inserted = Column(Integer, default=0)
-    records_updated = Column(Integer, default=0)
-    records_failed = Column(Integer, default=0)
-
-    # Status
-    status = Column(String(50), default="running", comment="running, completed, failed")
-    error_message = Column(Text, comment="Error details if failed")
-
-    # Timing
-    started_at = Column(DateTime, default=datetime.now)
-    completed_at = Column(DateTime)
-    duration_seconds = Column(Float)
-
-    # Metadata
-    triggered_by = Column(String(100), comment="cron, manual, or api")
-
-    def __repr__(self):
-        return f"<SyncLog(table={self.table_name}, status={self.status}, records={self.records_fetched})>"
-
-
 class SyncCheckpoint(Base):
-    """Store last successful sync state for each table"""
+    """
+    Enhanced Sync Checkpoint - Tracks detailed sync statistics per table
+
+    Features:
+    - Success/failure counts per sync run
+    - Date range tracking for provision syncs
+    - Sync status monitoring
+    - Error message logging
+    - Full audit trail
+    """
 
     __tablename__ = "sync_checkpoints"
     __table_args__ = {"schema": "dbo"}
 
-    table_name = Column(String(100), primary_key=True)
-    last_sync_date = Column(DateTime, comment="Last date successfully synced")
-    last_record_id = Column(
-        String(100), comment="Last record ID synced (for pagination)"
-    )
-    total_records_synced = Column(Integer, default=0)
-    last_successful_sync = Column(DateTime)
-
-    def __repr__(self):
-        return f"<SyncCheckpoint(table={self.table_name}, last_sync={self.last_sync_date})>"
-
-
-class UserCredentials(Base):
-    """
-    User credentials table for DEO and Superuser authentication.
-
-    Stores hashed passwords and authentication metadata.
-    Supports password changes and account management.
-    """
-
-    __tablename__ = "user_credentials"
-    __table_args__ = {"schema": "dbo"}
-
-    # Primary Key
-    credential_id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # User References
-    user_id = Column(
-        Integer,
-        unique=True,
-        index=True,
-        comment="References agent_id from DEO or superuser_id",
-    )
-    user_type = Column(String(20), nullable=False, comment="'deo' or 'superuser'")
-    username = Column(
+    # =========================================================================
+    # PRIMARY KEY
+    # =========================================================================
+    table_name = Column(
         String(100),
-        unique=True,
-        index=True,
-        comment="Login username (agent_code for DEO)",
+        primary_key=True,
+        comment="Table name (bsk_master, deo_master, service_master, provision)",
     )
 
-    # Password (HASHED with bcrypt)
-    password_hash = Column(Text, nullable=False, comment="Bcrypt hashed password")
+    # =========================================================================
+    # LAST SYNC RUN STATISTICS
+    # =========================================================================
+    last_sync_date = Column(DateTime, comment="Timestamp when last sync completed")
 
-    # Password Management
-    password_last_changed = Column(
-        DateTime, default=datetime.now, comment="When password was last changed"
-    )
-    must_change_password = Column(
-        Boolean, default=True, comment="Force password change on next login"
-    )
-    failed_login_attempts = Column(
-        Integer, default=0, comment="Track failed login attempts"
-    )
-    account_locked_until = Column(
-        DateTime, nullable=True, comment="Account lockout timestamp"
+    last_sync_success_count = Column(
+        Integer,
+        default=0,
+        comment="Number of records successfully inserted in last sync",
     )
 
-    # Status
-    is_active = Column(Boolean, default=True, comment="Account active status")
+    last_sync_failed_count = Column(
+        Integer,
+        default=0,
+        comment="Number of records that failed to insert in last sync",
+    )
 
-    # Audit
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    last_login = Column(
-        DateTime, nullable=True, comment="Last successful login timestamp"
+    sync_status = Column(
+        String(20),
+        default="pending",
+        comment="Status: 'success', 'partial', 'failed', 'running', 'pending'",
+    )
+
+    error_message = Column(
+        Text, nullable=True, comment="Last error message if sync failed"
+    )
+
+    # =========================================================================
+    # CUMULATIVE STATISTICS (ALL TIME)
+    # =========================================================================
+    total_records_synced = Column(
+        Integer,
+        default=0,
+        comment="Cumulative total of all successfully synced records",
+    )
+
+    total_sync_runs = Column(
+        Integer, default=0, comment="Total number of sync runs executed"
+    )
+
+    total_failures = Column(
+        Integer, default=0, comment="Cumulative total of all failed record inserts"
+    )
+
+    # =========================================================================
+    # PROVISION-SPECIFIC DATE RANGE TRACKING
+    # =========================================================================
+    provision_start_date = Column(
+        Date,
+        nullable=True,
+        comment="Start date for last provision sync (provision table only)",
+    )
+
+    provision_end_date = Column(
+        Date,
+        nullable=True,
+        comment="End date for last provision sync (provision table only)",
+    )
+
+    # =========================================================================
+    # AUDIT TRAIL
+    # =========================================================================
+    last_successful_sync = Column(
+        DateTime, comment="Timestamp of last successful sync (status='success')"
+    )
+
+    first_sync_date = Column(
+        DateTime, default=func.now(), comment="Timestamp when table was first synced"
+    )
+
+    last_record_id = Column(
+        String(100),
+        nullable=True,
+        comment="Last record ID synced (for pagination, if applicable)",
+    )
+
+    # =========================================================================
+    # PERFORMANCE TRACKING
+    # =========================================================================
+    last_sync_duration_seconds = Column(
+        Integer, nullable=True, comment="Duration of last sync in seconds"
+    )
+
+    avg_sync_duration_seconds = Column(
+        Integer, nullable=True, comment="Average sync duration across all runs"
     )
 
     def __repr__(self):
-        return f"<UserCredentials(username='{self.username}', user_type='{self.user_type}', active={self.is_active})>"
-
-
-class Superuser(Base):
-    """
-    Superuser/Admin master table.
-
-    Stores superuser profile information.
-    """
-
-    __tablename__ = "superusers"
-    __table_args__ = {"schema": "dbo"}
-
-    # Primary Key
-    superuser_id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Profile
-    full_name = Column(String(200), nullable=False)
-    email = Column(String(250), unique=True, index=True)
-    phone = Column(String(50))
-
-    # Role & Permissions
-    role = Column(
-        String(50), default="admin", comment="admin, super_admin, analyst, etc."
-    )
-    permissions = Column(JSON, comment="List of permitted actions/modules")
-
-    # Status
-    is_active = Column(Boolean, default=True)
-
-    # Audit
-    created_at = Column(DateTime, default=datetime.now)
-    created_by = Column(Integer, comment="Who created this superuser")
-
-    def __repr__(self):
-        return f"<Superuser(id={self.superuser_id}, name='{self.full_name}', role='{self.role}')>"
-
-
-class PasswordResetToken(Base):
-    """
-    Temporary tokens for password reset functionality.
-    """
-
-    __tablename__ = "password_reset_tokens"
-    __table_args__ = {"schema": "dbo"}
-
-    token_id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, index=True, comment="User requesting reset")
-    user_type = Column(String(20), comment="'deo' or 'superuser'")
-
-    reset_token = Column(
-        String(100), unique=True, index=True, comment="Unique reset token"
-    )
-
-    created_at = Column(DateTime, default=datetime.now)
-    expires_at = Column(DateTime, comment="Token expiration (24 hours)")
-    used_at = Column(DateTime, nullable=True, comment="When token was used")
-    is_used = Column(Boolean, default=False)
-
-    def __repr__(self):
-        return f"<PasswordResetToken(user_id={self.user_id}, used={self.is_used})>"
+        return (
+            f"<SyncCheckpoint("
+            f"table={self.table_name}, "
+            f"status={self.sync_status}, "
+            f"last_run={self.last_sync_date}, "
+            f"success={self.last_sync_success_count}, "
+            f"failed={self.last_sync_failed_count}"
+            f")>"
+        )
 
 
 class ServiceVideo(Base):
@@ -844,3 +695,241 @@ class VideoGenerationLog(Base):
 
     def __repr__(self):
         return f"<VideoGenerationLog(video_id={self.video_id}, step='{self.step_name}', status='{self.step_status}')>"
+
+
+class VideoGenerationQueue(Base):
+    """
+    Queue table for async video generation requests
+    
+    Tracks the lifecycle of each video generation:
+    - pending → processing → completed → retrieved
+    
+    Once a video is retrieved by the user, it can be cleaned up after a few days.
+    """
+    __tablename__ = "video_generation_queue"
+    __table_args__ = {"schema": "dbo"}
+    # Primary identification
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    video_id = Column(String(100), unique=True, index=True, nullable=False)  # UUID
+    
+    # Service information
+    service_id = Column(Integer, nullable=True)  # Foreign key to service_master
+    service_name = Column(String(500), nullable=False, index=True)
+    source_type = Column(String(50), nullable=False)  # 'form_ai_enhanced', 'pdf_ai_enhanced'
+    
+    # Request tracking
+    status = Column(String(20), nullable=False, index=True)  # pending, processing, completed, retrieved, failed
+    request_data = Column(JSON, nullable=True)  # Original request data for debugging
+    
+    # Timestamps
+    created_at = Column(DateTime, nullable=False, index=True)  # When request was created
+    started_at = Column(DateTime, nullable=True)               # When processing started
+    completed_at = Column(DateTime, nullable=True, index=True) # When video was ready
+    retrieved_at = Column(DateTime, nullable=True)             # When user retrieved it
+    failed_at = Column(DateTime, nullable=True)                # When it failed (if applicable)
+    updated_at = Column(DateTime, nullable=False)              # Last update time
+    
+    # Video details (populated after completion)
+    video_record_id = Column(Integer, nullable=True)  # Foreign key to service_videos table
+    video_url = Column(String(500), nullable=True)
+    video_path = Column(String(500), nullable=True)
+    file_size_mb = Column(Float, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    total_slides = Column(Integer, nullable=True)
+    
+    # Error tracking
+    error_message = Column(Text, nullable=True)
+
+    # Push tracking (set when result is POSTed to external BSK API)
+    pushed_at = Column(DateTime, nullable=True)   # When result was pushed to bsk.wb.gov.in
+    
+
+class VideoGenerationTask(Base):
+    """
+    Video Generation Task table
+    
+    Tracks asynchronous video generation requests and their status.
+    Works with RabbitMQ queue for background processing.
+    
+    Workflow:
+    1. User submits request → task created with status='pending'
+    2. Task published to RabbitMQ queue
+    3. Worker picks up task → status='processing'
+    4. Video generated → status='completed', video_url populated
+    5. If error → status='failed', error_message populated
+    """
+    
+    __tablename__ = "video_generation_tasks"
+    __table_args__ = {"schema": "dbo"}
+    
+    # Primary Key
+    task_id = Column(
+        String(36),  # UUID format
+        primary_key=True,
+        comment="Unique task identifier (UUID)"
+    )
+    
+    # Service Information
+    service_name = Column(
+        String(600),
+        nullable=False,
+        index=True,
+        comment="Service name for video generation"
+    )
+    service_id = Column(
+        Integer,
+        nullable=True,
+        index=True,
+        comment="Reference to service_master.service_id (NULL for new services)"
+    )
+    
+    # Task Status
+    status = Column(
+        String(20),
+        nullable=False,
+        default='pending',
+        index=True,
+        comment="Task status: pending, processing, completed, failed"
+    )
+    
+    # Progress Information
+    progress_percentage = Column(
+        Integer,
+        default=0,
+        comment="Progress percentage (0-100)"
+    )
+    current_step = Column(
+        String(100),
+        comment="Current processing step description"
+    )
+    
+    # Video Information
+    video_id = Column(
+        Integer,
+        nullable=True,
+        comment="Reference to service_videos.video_id after completion"
+    )
+    video_version = Column(
+        Integer,
+        comment="Video version number"
+    )
+    video_url = Column(
+        String(500),
+        comment="URL to access completed video"
+    )
+    video_path = Column(
+        String(500),
+        comment="File system path to video"
+    )
+    
+    # Source Information
+    source_type = Column(
+        String(30),
+        nullable=False,
+        comment="Source: pdf_automatic, pdf_manual, form_manual, form_ai_enhanced"
+    )
+    pdf_file_name = Column(
+        String(500),
+        comment="Original PDF filename (if applicable)"
+    )
+    form_data = Column(
+        JSON,
+        comment="Form input data (if applicable)"
+    )
+    
+    # Generation Metadata
+    total_slides = Column(
+        Integer,
+        comment="Total number of slides to generate"
+    )
+    slides_data = Column(
+        JSON,
+        comment="Slide data used for generation"
+    )
+    
+    # File Metadata
+    file_size_mb = Column(
+        Float,
+        comment="Video file size in MB"
+    )
+    duration_seconds = Column(
+        Float,
+        comment="Video duration in seconds"
+    )
+    
+    # Error Tracking
+    error_message = Column(
+        Text,
+        comment="Error details if generation failed"
+    )
+    retry_count = Column(
+        Integer,
+        default=0,
+        comment="Number of retry attempts"
+    )
+    max_retries = Column(
+        Integer,
+        default=3,
+        comment="Maximum retry attempts allowed"
+    )
+    
+    # User Information (Optional)
+    user_id = Column(
+        String(100),
+        comment="User who requested the video (if tracking users)"
+    )
+    client_ip = Column(
+        String(50),
+        comment="Client IP address for request tracking"
+    )
+    
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+        comment="When task was created"
+    )
+    started_at = Column(
+        DateTime(timezone=True),
+        comment="When processing started"
+    )
+    completed_at = Column(
+        DateTime(timezone=True),
+        comment="When task completed (success or failure)"
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        onupdate=func.now(),
+        comment="Last update timestamp"
+    )
+    
+    # Processing Information
+    processing_time_seconds = Column(
+        Float,
+        comment="Total processing time in seconds"
+    )
+    worker_id = Column(
+        String(100),
+        comment="ID of worker that processed this task"
+    )
+    
+    # Indexing for performance
+    __table_args__ = (
+        Index("idx_task_status", "status"),
+        Index("idx_task_service", "service_name", "status"),
+        Index("idx_task_created", "created_at"),
+        Index("idx_task_user", "user_id", "created_at"),
+        {"schema": "dbo"},
+    )
+    
+    def __repr__(self):
+        return (
+            f"<VideoGenerationTask("
+            f"task_id='{self.task_id}', "
+            f"service='{self.service_name}', "
+            f"status='{self.status}', "
+            f"progress={self.progress_percentage}%"
+            f")>"
+        )

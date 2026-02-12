@@ -1,0 +1,146 @@
+# ============================================================================
+# TrainAI - Docker Compose Configuration
+# ============================================================================
+# Optimized for TrainAI project structure: backend/ folder
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # PostgreSQL Database
+  # ==========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: trainai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      # POSTGRES_DB: ${DB_NAME:-webel_test}
+      POSTGRES_DB: ${DB_NAME:-ml_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      PGPORT: 5433
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "${DB_PORT:-5432}:5433"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 100s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trainai-network
+
+  # ==========================================================================
+  # TrainAI Application
+  # ==========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trainai-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database Configuration (Docker networking)
+      # DATABASE_URL: postgresql+psycopg2://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-webel_test}
+      DATABASE_URL: postgresql+psycopg2://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5433/${DB_NAME:-ml_db}
+      # API Keys
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      UNSPLASH_ACCESS_KEY: ${UNSPLASH_ACCESS_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      
+      # Application URLs
+      API_BASE_URL: http://app:54300
+      BASE_URL: ${BASE_URL:-http://localhost:8000}
+      BSK_API_BASE_URL: ${BSK_API_BASE_URL}
+      BSK_API_USERNAME: ${BSK_API_USERNAME}
+      BSK_API_PASSWORD: ${BSK_API_PASSWORD}
+      
+      # Security
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SUPERUSER_USERNAME: ${SUPERUSER_USERNAME:-admin}
+      SUPERUSER_PASSWORD: ${SUPERUSER_PASSWORD:-admin123}
+      
+      # Configuration
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      VIDEO_BASE_DIR: /app/backend/videos
+      
+      # System Dependencies
+      TESSERACT_CMD: /usr/bin/tesseract
+      IMAGEMAGICK_BINARY: /usr/bin/convert
+      
+    ports:
+      - "${APP_PORT:-54300}:54300"
+    
+    volumes:
+      # Persistent storage - matching backend/ structure
+      - video_data:/app/backend/videos
+      - output_videos:/app/backend/output_videos
+      - images_cache:/app/backend/images
+      - uploads:/app/backend/uploads
+      - generated_pdfs:/app/backend/generated_pdfs
+      
+      # Optional: Mount assets if you have custom files
+      # - ./assets:/app/assets:ro
+      
+    networks:
+      - trainai-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:54300/health"]
+      interval: 300s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ==========================================================================
+  # Optional: PgAdmin for Database Management
+  # ==========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: trainai-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@trainai.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - trainai-network
+    profiles:
+      - tools  # Start with: docker-compose --profile tools up
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  video_data:
+    driver: local
+  output_videos:
+    driver: local
+  images_cache:
+    driver: local
+  uploads:
+    driver: local
+  generated_pdfs:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  trainai-network:
+    driver: bridge

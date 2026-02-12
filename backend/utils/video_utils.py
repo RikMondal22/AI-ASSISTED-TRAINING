@@ -1,6 +1,59 @@
-from utils.avatar_utils import add_avatar_to_slide
 import os
+import shutil
+from moviepy.config import change_settings
 
+# =============================================================================
+# ImageMagick Configuration - COMPLETE FIX
+# =============================================================================
+
+def setup_imagemagick():
+    """
+    Auto-detect and configure ImageMagick for MoviePy
+    Works in Docker and Windows
+    """
+    
+    # Force Docker path first if in container
+    docker_path = "/usr/bin/convert"
+    if os.path.exists(docker_path):
+        os.environ["IMAGEMAGICK_BINARY"] = docker_path
+        change_settings({"IMAGEMAGICK_BINARY": docker_path})
+        print(f"✅ ImageMagick configured: {docker_path}")
+        return docker_path
+    
+    # Check environment variable
+    env_path = os.getenv("IMAGEMAGICK_BINARY")
+    if env_path and os.path.exists(env_path):
+        change_settings({"IMAGEMAGICK_BINARY": env_path})
+        print(f"✅ ImageMagick configured from env: {env_path}")
+        return env_path
+    
+    # Check system PATH
+    for cmd in ["convert", "magick"]:
+        path = shutil.which(cmd)
+        if path:
+            os.environ["IMAGEMAGICK_BINARY"] = path
+            change_settings({"IMAGEMAGICK_BINARY": path})
+            print(f"✅ ImageMagick configured from PATH: {path}")
+            return path
+    
+    # Windows fallback
+    windows_paths = [
+        r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe",
+        r"C:\Program Files\ImageMagick\magick.exe",
+        r"C:\Program Files (x86)\ImageMagick\magick.exe",
+    ]
+    for path in windows_paths:
+        if os.path.exists(path):
+            os.environ["IMAGEMAGICK_BINARY"] = path
+            change_settings({"IMAGEMAGICK_BINARY": path})
+            print(f"✅ ImageMagick configured: {path}")
+            return path
+    
+    print("⚠️  WARNING: ImageMagick not found!")
+    return None
+
+# Initialize ImageMagick BEFORE any other imports that use it
+setup_imagemagick()
 from moviepy.editor import (
     ImageClip,
     concatenate_videoclips,
@@ -11,32 +64,31 @@ from moviepy.editor import (
     ColorClip,
     vfx,
 )
-from moviepy.config import change_settings
 
-# -------------------------------------------------
-# ImageMagick config
-# -------------------------------------------------
-change_settings(
-    {"IMAGEMAGICK_BINARY": r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"}
-)
 
+# Now import avatar utils (which uses ImageMagick)
+from utils.avatar_utils import add_avatar_to_slide
+
+# Video configuration
 VIDEO_W, VIDEO_H = 1280, 720
 TOP_TEXT_HEIGHT = int(VIDEO_H * 0.6)
 BOTTOM_IMAGE_HEIGHT = VIDEO_H - TOP_TEXT_HEIGHT
 
 
-# -------------------------------------------------
-# SLIDE CREATION WITH BETTER ANIMATION
-# -------------------------------------------------
+# =============================================================================
+# Slide Creation
+# =============================================================================
+
 def create_slide(title, points, image_path, audio_file):
+    """Create a single video slide with title, bullets, image, and audio"""
+    
     if not os.path.exists(audio_file) or os.path.getsize(audio_file) < 1024:
         raise RuntimeError(f"Invalid audio file: {audio_file}")
+    
     audio_clip = AudioFileClip(audio_file)
     duration = audio_clip.duration + 0.4  # small buffer
 
-    # -----------------------------
-    # BACKGROUND (soft animated)
-    # -----------------------------
+    # Background
     bg = (
         ColorClip(size=(VIDEO_W, VIDEO_H), color=(20, 22, 32))
         .set_duration(duration)
@@ -50,15 +102,13 @@ def create_slide(title, points, image_path, audio_file):
         .set_duration(duration)
     )
 
-    # -----------------------------
-    # TITLE
-    # -----------------------------
+    # Title
     title_clip = (
         TextClip(
             title,
             fontsize=48,
             color="white",
-            font="Arial-Bold",
+            font="DejaVu-Sans-Bold",  # Use font that exists in Docker
             size=(VIDEO_W - 120, None),
             method="caption",
         )
@@ -73,7 +123,7 @@ def create_slide(title, points, image_path, audio_file):
             title,
             fontsize=48,
             color="black",
-            font="Arial-Bold",
+            font="DejaVu-Sans-Bold",
             size=(VIDEO_W - 120, None),
             method="caption",
         )
@@ -83,9 +133,7 @@ def create_slide(title, points, image_path, audio_file):
         .set_opacity(0.6)
     )
 
-    # -----------------------------
-    # BULLETS (top section only)
-    # -----------------------------
+    # Bullets
     bullet_clips = []
     start_y = 140
     line_gap = 44
@@ -99,7 +147,7 @@ def create_slide(title, points, image_path, audio_file):
                 text,
                 fontsize=32,
                 color="white",
-                font="Arial",
+                font="DejaVu-Sans",
                 size=(VIDEO_W - 200, None),
                 method="caption",
             )
@@ -114,7 +162,7 @@ def create_slide(title, points, image_path, audio_file):
                 text,
                 fontsize=32,
                 color="black",
-                font="Arial",
+                font="DejaVu-Sans",
                 size=(VIDEO_W - 200, None),
                 method="caption",
             )
@@ -126,31 +174,24 @@ def create_slide(title, points, image_path, audio_file):
 
         bullet_clips.extend([shadow, bullet])
 
-    # -----------------------------
-    # CONTENT IMAGE (BOTTOM-RIGHT, STATIC)
-    # -----------------------------
+    # Image
     image_clips = []
     if os.path.exists(image_path):
         img = (
             ImageClip(image_path)
-            .resize(height=220)  # fixed, clean size
-            .set_position(
-                (VIDEO_W - 260, VIDEO_H - 260)  # right margin  # bottom margin
-            )
+            .resize(height=220)
+            .set_position((VIDEO_W - 260, VIDEO_H - 260))
             .set_duration(duration)
         )
-
         image_clips.append(img)
 
-    # -----------------------------
-    # FOOTER
-    # -----------------------------
+    # Footer
     footer = (
         TextClip(
             "Bangla Sahayta Kendra • Government of West Bengal",
             fontsize=18,
             color="lightgray",
-            font="Arial",
+            font="DejaVu-Sans",
             size=(VIDEO_W - 80, None),
             method="caption",
         )
@@ -165,18 +206,15 @@ def create_slide(title, points, image_path, audio_file):
 
     slide = slide.set_audio(audio_clip)
 
-    # -----------------------------
-    # AVATAR (kept intact)
-    # -----------------------------
+    # Add avatar
     slide = add_avatar_to_slide(slide, audio_clip.duration)
 
     return slide.crossfadein(0.4).crossfadeout(0.4)
 
 
-# -------------------------------------------------
-# COMBINE SLIDES (NO BLACK GAPS)
-# -------------------------------------------------
 def combine_slides_and_audio(video_clips, audio_paths, service_name=None):
+    """Combine multiple slides into final video"""
+    
     # Smooth overlap between slides
     final_video = concatenate_videoclips(video_clips, method="compose", padding=-0.4)
 
