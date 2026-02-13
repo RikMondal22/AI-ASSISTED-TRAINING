@@ -10,6 +10,7 @@ This module handles async video generation with a queue-based approach:
 
 import os
 import uuid
+import ssl
 import logging
 import requests
 from requests.adapters import HTTPAdapter
@@ -38,12 +39,19 @@ print(BSK_API_PASSWORD)
 
 # ---------------------------------------------------------------------------
 # SSL adapter — same pattern as SyncService (legacy govt server)
+# FIXED: Added check_hostname and verify_mode to resolve SSL error
 # ---------------------------------------------------------------------------
 class _SSLAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
         ctx = create_urllib3_context()
         ctx.load_default_certs()
         ctx.options |= 0x4  # OP_LEGACY_SERVER_CONNECT
+        
+        # CRITICAL FIX: Disable hostname checking and certificate verification
+        # This is required for verify=False to work properly with legacy servers
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
         kwargs["ssl_context"] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
@@ -401,46 +409,7 @@ class VideoQueueManager:
             for req in pending
         ]
     
-    # ========================================================================
-    # 7. CLEANUP OLD RETRIEVED VIDEOS
-    # ========================================================================
-    
-    # def cleanup_retrieved_videos(
-    #     self,
-    #     db: Session,
-    #     days_old: int = 7,
-    # ) -> int:
-    #     """
-    #     Clean up old retrieved videos from the queue
-        
-    #     Args:
-    #         db: Database session
-    #         days_old: Delete records older than this many days
-        
-    #     Returns:
-    #         Number of records deleted
-    #     """
-    #     from datetime import timedelta
-        
-    #     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
-        
-    #     deleted_count = (
-    #         db.query(models.VideoGenerationQueue)
-    #         .filter(
-    #             models.VideoGenerationQueue.status == VideoGenerationStatus.RETRIEVED,
-    #             models.VideoGenerationQueue.retrieved_at < cutoff_date,
-    #         )
-    #         .delete(synchronize_session=False)
-    #     )
-        
-    #     db.commit()
-        
-    #     if deleted_count > 0:
-    #         self.logger.info(
-    #             f"🧹 Cleaned up {deleted_count} old retrieved video records"
-    #         )
-        
-    #     return deleted_count
+
 
     # ========================================================================
     # 8. PUSH COMPLETION RESULT TO EXTERNAL BSK API
