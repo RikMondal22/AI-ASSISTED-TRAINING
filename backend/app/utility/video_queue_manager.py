@@ -65,6 +65,7 @@ def _make_bsk_session() -> requests.Session:
         BSK_AUTH_URL,
         json={"username": BSK_API_USERNAME, "password": BSK_API_PASSWORD},
         timeout=30,
+        verify=False
     )
     resp.raise_for_status()
     data = resp.json()
@@ -511,7 +512,7 @@ class VideoQueueManager:
             # Authenticate and get a fresh session (same pattern as SyncService)
             bsk_session = _make_bsk_session()
 
-            response = bsk_session.post(BSK_PUSH_URL, json=payload, timeout=30)
+            response = bsk_session.post(BSK_PUSH_URL, json=payload, timeout=30, verify=False)
 
             if response.status_code in (200, 201, 202):
                 self.logger.info(
