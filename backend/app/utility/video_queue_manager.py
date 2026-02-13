@@ -20,16 +20,21 @@ from enum import Enum
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from app.models import models
-
+from dotenv import load_dotenv
+load_dotenv()
 # ============================================================================
 # External push-back config  (values come from environment variables)
 # ============================================================================
-BSK_API_BASE_URL  = os.getenv("BSK_API_BASE_URL",  "https://bsk.wb.gov.in/aiapi")
-BSK_API_USERNAME  = os.getenv("BSK_API_USERNAME")
-BSK_API_PASSWORD  = os.getenv("BSK_API_PASSWORD")
+BSK_API_BASE_URL  = os.getenv("BSK_API_VIDEO_BASE_URL",  "https://bsk.wb.gov.in/aiapi")
+BSK_API_USERNAME  = os.getenv("BSK_API_VIDEO_USERNAME")
+BSK_API_PASSWORD  = os.getenv("BSK_API_VIDEO_PASSWORD")
 BSK_PUSH_URL      = f"{BSK_API_BASE_URL}/push_completed_videos"
 BSK_AUTH_URL      = f"{BSK_API_BASE_URL}/generate_token"
 
+
+print(BSK_API_BASE_URL)
+print(BSK_API_USERNAME)
+print(BSK_API_PASSWORD)
 
 # ---------------------------------------------------------------------------
 # SSL adapter — same pattern as SyncService (legacy govt server)
